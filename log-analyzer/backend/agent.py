@@ -270,19 +270,19 @@ CURRENT LOG SUMMARY (use these exact numbers in your components — do not fabri
 - Date range: {json.dumps(date_range)}
 """
 
-    # Augment system prompt with rich UI instructions — MANDATORY
+    # Augment system prompt with rich UI instructions
     system += """
 
-CRITICAL RENDERING RULES — YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
+RENDERING RULES:
 
-Your responses are rendered as interactive UI widgets, NOT plain text. Every response MUST use the component blocks below. Do NOT write raw numbers or statistics in plain prose — always use the appropriate component.
+Your responses are rendered as interactive UI widgets. Use these components ONLY when they add clarity — do NOT inject them mechanically into every response.
 
-MANDATORY RULES:
-- Every key number/stat → :::metric::: block
-- Any distribution, ratio, or multi-value comparison → :::chart::: block
-- Quoting a specific log line → :::log-ref::: block
-- Any sequence of events → :::timeline::: block
-- Root cause / diagnostic questions → :::quiz::: block
+When to use each component:
+- :::metric::: — only for a specific stat the user asked about (not a dump of all stats)
+- :::chart::: — only when comparing multiple values (e.g. error distribution across loggers)
+- :::log-ref::: — only when quoting an actual log line from the data
+- :::timeline::: — only for ordered event sequences
+- :::quiz::: — only for root-cause diagnostic questions
 
 COMPONENT SYNTAX (each block on its own line, valid JSON inside):
 
@@ -290,21 +290,11 @@ COMPONENT SYNTAX (each block on its own line, valid JSON inside):
 
 :::chart{"type":"bar","title":"Log Levels","labels":["ERROR","INFO","WARNING"],"datasets":[{"label":"Count","data":[457,121,14],"color":"error"}]}:::
 
-:::chart{"type":"bar","title":"Logger Activity","labels":["recognition","__unparsed__"],"datasets":[{"label":"Total","data":[592,16],"color":"primary"},{"label":"Error %","data":[77.2,0],"color":"error"}]}:::
-
 :::log-ref{"ts":"2024-01-01 12:00:01","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed"}:::
 
 :::timeline{"title":"Event Sequence","events":[{"ts":"12:01:05","level":"WARNING","msg":"First warning"},{"ts":"12:01:12","level":"ERROR","msg":"First error"}]}:::
 
-:::quiz{"question":"What is the root cause?","options":["A","B","C"],"answer":0,"explanation":"Because..."}:::
-
-RESPONSE STRUCTURE — follow this order EVERY time:
-1. One-sentence markdown summary.
-2. :::metric::: blocks for each key stat.
-3. :::chart::: for distributions / comparisons.
-4. :::log-ref::: when citing log lines.
-5. :::timeline::: for event sequences.
-6. One short markdown paragraph for interpretation (no raw numbers — reference the widgets above instead).
+BE DIRECT AND CONCISE. Answer only what was asked. Do not repeat general stats on every response. If the user asks for the first 10 log events, show them with :::log-ref::: blocks — nothing else. If asked for top errors, list them. If asked a yes/no question, answer it directly in one sentence.
 """
 
     messages = history[-30:] + [{"role": "user", "content": question}]
@@ -399,16 +389,13 @@ async def run_rag_stream(
     )
     system += """
 
-CRITICAL RENDERING RULES — YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
+RENDERING RULES: Use UI components only when they help — not on every response.
+- :::metric::: for specific stats the user asked about
+- :::chart::: for multi-value comparisons
+- :::log-ref::: when quoting an actual log line
+- :::timeline::: for ordered event sequences
 
-Your responses are rendered as interactive UI widgets. Use these component blocks — plain prose with raw numbers is FORBIDDEN.
-
-:::metric{"label":"Label","value":"42","trend":"up","color":"error","note":"context note"}:::
-:::chart{"type":"bar","title":"Title","labels":["A","B"],"datasets":[{"label":"Series","data":[10,20],"color":"primary"}]}:::
-:::log-ref{"ts":"2024-01-01 12:00:00","level":"ERROR","logger":"app","msg":"message text"}:::
-:::timeline{"title":"Title","events":[{"ts":"12:01","level":"ERROR","msg":"event"}]}:::
-
-Rules: metrics for every number, charts for distributions/comparisons, log-ref when quoting log lines, timeline for event sequences. End with a brief markdown interpretation paragraph — no raw numbers in prose.
+BE CONCISE. Answer only what was asked. Do not dump all stats on every response.
 """
 
     results = state.rag_store.query(question, top_k=top_k)
