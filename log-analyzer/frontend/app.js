@@ -485,6 +485,283 @@ function initTimeline() {
   });
 }
 
+// ── Rich Component Renderer ───────────────────────────────────────────────────
+
+// Parse :::type{json}::: blocks out of markdown text
+function parseRichBlocks(text) {
+  const BLOCK_RE = /:::([a-z-]+)(\{[\s\S]*?\}):::/g;
+  const segments = [];
+  let last = 0;
+  let m;
+  while ((m = BLOCK_RE.exec(text)) !== null) {
+    if (m.index > last) segments.push({ kind: 'md', text: text.slice(last, m.index) });
+    try {
+      const data = JSON.parse(m[2]);
+      segments.push({ kind: m[1], data });
+    } catch {
+      segments.push({ kind: 'md', text: m[0] });
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segments.push({ kind: 'md', text: text.slice(last) });
+  return segments;
+}
+
+function renderRichSegments(segments) {
+  const container = document.createElement('div');
+  container.className = 'rich-content';
+  segments.forEach(seg => {
+    if (seg.kind === 'md') {
+      if (seg.text.trim()) {
+        const md = document.createElement('div');
+        md.className = 'md-block';
+        md.innerHTML = marked.parse(seg.text);
+        container.appendChild(md);
+      }
+    } else {
+      const el = renderRichComponent(seg.kind, seg.data);
+      if (el) container.appendChild(el);
+    }
+  });
+  return container;
+}
+
+function renderRichComponent(kind, data) {
+  switch (kind) {
+    case 'log-ref':    return renderLogRef(data);
+    case 'chart':      return renderInlineChart(data);
+    case 'quiz':       return renderQuiz(data);
+    case 'metric':     return renderMetric(data);
+    case 'timeline':   return renderTimeline2(data);
+    default:           return null;
+  }
+}
+
+function renderLogRef(d) {
+  const div = document.createElement('div');
+  div.className = `rich-log-ref level-border-${d.level || 'INFO'}`;
+  div.innerHTML = `
+    <div class="rich-log-ref-meta">
+      <span class="level-badge level-${d.level || 'INFO'}">${d.level || 'INFO'}</span>
+      <span class="rich-log-ts">${esc(d.ts || '')}</span>
+      <span class="rich-log-logger">${esc(d.logger || '')}</span>
+    </div>
+    <div class="rich-log-msg">${esc(d.msg || '')}</div>`;
+  div.addEventListener('click', () => {
+    // Jump to timeline with this timestamp
+    if (d.ts) {
+      tlFilters.keyword = d.msg ? d.msg.slice(0, 40) : '';
+      document.getElementById('tl-keyword').value = tlFilters.keyword;
+      loadTimeline(1);
+      navigateTo('timeline');
+    }
+  });
+  div.title = 'Click to find in Timeline';
+  return div;
+}
+
+function renderInlineChart(d) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rich-chart-wrap';
+  if (d.title) {
+    const h = document.createElement('div');
+    h.className = 'rich-chart-title';
+    h.textContent = d.title;
+    wrap.appendChild(h);
+  }
+  const canvas = document.createElement('canvas');
+  canvas.height = 160;
+  wrap.appendChild(canvas);
+
+  const c = getChartColors();
+  const colorMap = { error: c.error, warning: c.warning, success: c.success, primary: c.primary, info: c.info };
+
+  const datasets = (d.datasets || []).map(ds => ({
+    label: ds.label || '',
+    data: ds.data || [],
+    backgroundColor: (colorMap[ds.color] || c.primary) + 'cc',
+    borderColor: colorMap[ds.color] || c.primary,
+    borderWidth: 1.5,
+    borderRadius: 4,
+    fill: d.type === 'line',
+    tension: 0.3,
+    pointRadius: d.type === 'line' ? 3 : 0,
+  }));
+
+  setTimeout(() => {
+    new Chart(canvas.getContext('2d'), {
+      type: d.type || 'bar',
+      data: { labels: d.labels || [], datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: datasets.length > 1, labels: { color: c.onSurface, boxWidth: 10, font: { size: 10 } } },
+        },
+        scales: {
+          x: { ticks: { color: c.onSurface, font: { size: 9 }, maxRotation: 30 }, grid: { color: c.outline + '40' } },
+          y: { ticks: { color: c.onSurface, font: { size: 9 } }, grid: { color: c.outline + '40' } },
+        },
+      },
+    });
+  }, 0);
+  return wrap;
+}
+
+function renderQuiz(d) {
+  const div = document.createElement('div');
+  div.className = 'rich-quiz';
+  div.innerHTML = `<div class="rich-quiz-q"><span class="material-symbols-rounded">quiz</span>${esc(d.question || '')}</div>`;
+  const opts = document.createElement('div');
+  opts.className = 'rich-quiz-opts';
+  (d.options || []).forEach((opt, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'rich-quiz-opt';
+    btn.dataset.idx = i;
+    btn.innerHTML = `<span class="opt-letter">${String.fromCharCode(65 + i)}</span><span>${esc(opt)}</span>`;
+    btn.addEventListener('click', () => {
+      if (div.dataset.answered) return;
+      div.dataset.answered = '1';
+      opts.querySelectorAll('.rich-quiz-opt').forEach((b, j) => {
+        b.disabled = true;
+        if (j === d.answer) b.classList.add('correct');
+        else if (j === i && i !== d.answer) b.classList.add('wrong');
+      });
+      if (d.explanation) {
+        const exp = document.createElement('div');
+        exp.className = 'rich-quiz-exp';
+        exp.innerHTML = `<span class="material-symbols-rounded">info</span>${esc(d.explanation)}`;
+        div.appendChild(exp);
+      }
+    });
+    opts.appendChild(btn);
+  });
+  div.appendChild(opts);
+  return div;
+}
+
+function renderMetric(d) {
+  const colorMap = { error: 'var(--c-error)', warning: 'var(--c-warning)', success: 'var(--c-success)', info: 'var(--c-info)', primary: 'var(--c-primary)' };
+  const col = colorMap[d.color] || 'var(--c-primary)';
+  const trendIcon = d.trend === 'up' ? 'trending_up' : d.trend === 'down' ? 'trending_down' : 'trending_flat';
+  const div = document.createElement('div');
+  div.className = 'rich-metric';
+  div.style.borderLeftColor = col;
+  div.innerHTML = `
+    <div class="rich-metric-value" style="color:${col}">${esc(String(d.value || ''))}</div>
+    <div class="rich-metric-label">${esc(d.label || '')}</div>
+    ${d.note ? `<div class="rich-metric-note">${esc(d.note)}</div>` : ''}
+    ${d.trend ? `<span class="material-symbols-rounded rich-metric-trend" style="color:${col}">${trendIcon}</span>` : ''}`;
+  return div;
+}
+
+function renderTimeline2(d) {
+  const div = document.createElement('div');
+  div.className = 'rich-timeline';
+  if (d.title) {
+    const h = document.createElement('div');
+    h.className = 'rich-timeline-title';
+    h.innerHTML = `<span class="material-symbols-rounded">timeline</span>${esc(d.title)}`;
+    div.appendChild(h);
+  }
+  const list = document.createElement('div');
+  list.className = 'rich-timeline-list';
+  (d.events || []).forEach(ev => {
+    const item = document.createElement('div');
+    item.className = `rich-tl-item`;
+    item.innerHTML = `
+      <div class="rich-tl-dot level-dot-${ev.level || 'INFO'}"></div>
+      <div class="rich-tl-body">
+        <div class="rich-tl-meta">
+          <span class="level-badge level-${ev.level || 'INFO'}">${ev.level || 'INFO'}</span>
+          <span class="rich-log-ts">${esc(ev.ts || '')}</span>
+        </div>
+        <div class="rich-tl-msg">${esc(ev.msg || '')}</div>
+      </div>`;
+    list.appendChild(item);
+  });
+  div.appendChild(list);
+  return div;
+}
+
+// ── Agent Panel ───────────────────────────────────────────────────────────────
+
+const TOOL_ICONS = {
+  search_logs:  'manage_search',
+  get_stats:    'bar_chart',
+  get_timeline: 'view_timeline',
+  get_samples:  'receipt_long',
+};
+
+function agentPanelSetActive(active) {
+  const dot = document.getElementById('agent-dot');
+  if (dot) dot.classList.toggle('active', active);
+}
+
+function agentPanelClear() {
+  const steps = document.getElementById('agent-steps');
+  if (steps) steps.innerHTML = '';
+}
+
+function agentPanelAddStep(type, data) {
+  const steps = document.getElementById('agent-steps');
+  if (!steps) return;
+
+  // Remove idle message
+  steps.querySelector('.agent-idle-msg')?.remove();
+
+  const item = document.createElement('div');
+  item.className = 'agent-step';
+
+  if (type === 'thinking') {
+    item.className = 'agent-step agent-thinking';
+    item.innerHTML = `
+      <span class="material-symbols-rounded agent-step-icon">psychology</span>
+      <div class="agent-step-body">
+        <div class="agent-step-label">Thinking…</div>
+        <div class="thinking-dot"><span></span><span></span><span></span></div>
+      </div>`;
+  } else if (type === 'tool_call') {
+    const icon = TOOL_ICONS[data.name] || 'build';
+    let argPreview = '';
+    try {
+      const args = typeof data.input === 'string' ? JSON.parse(data.input) : data.input;
+      argPreview = args.query || args.fields?.join(', ') || args.logger || args.keyword || JSON.stringify(args).slice(0, 60);
+    } catch { argPreview = String(data.input || '').slice(0, 60); }
+    item.innerHTML = `
+      <span class="material-symbols-rounded agent-step-icon tool">${icon}</span>
+      <div class="agent-step-body">
+        <div class="agent-step-label"><strong>${data.name}</strong></div>
+        ${argPreview ? `<div class="agent-step-detail">${esc(argPreview)}</div>` : ''}
+      </div>`;
+    item.id = 'agent-tool-' + data.name + '-' + Date.now();
+  } else if (type === 'tool_result') {
+    item.className = 'agent-step agent-result';
+    let preview = '';
+    try {
+      const res = JSON.parse(data.content);
+      if (res.results) preview = `${res.results.length} results`;
+      else if (res.total !== undefined) preview = `${res.total} events`;
+      else if (res.count !== undefined) preview = `${res.count} samples`;
+      else if (res.error) preview = '⚠ ' + res.error;
+      else preview = data.content.slice(0, 80);
+    } catch { preview = data.content.slice(0, 80); }
+    item.innerHTML = `
+      <span class="material-symbols-rounded agent-step-icon result">check_circle</span>
+      <div class="agent-step-body">
+        <div class="agent-step-label">${esc(data.name)} → done</div>
+        <div class="agent-step-detail">${esc(preview)}</div>
+      </div>`;
+  } else if (type === 'done') {
+    item.className = 'agent-step agent-done';
+    item.innerHTML = `
+      <span class="material-symbols-rounded agent-step-icon done">task_alt</span>
+      <div class="agent-step-body"><div class="agent-step-label">Response complete</div></div>`;
+  }
+
+  steps.appendChild(item);
+  steps.scrollTop = steps.scrollHeight;
+}
+
 // ── Chat ──────────────────────────────────────────────────────────────────────
 function populateSuggestions(summary) {
   const char = summary.characterization || {};
@@ -513,7 +790,7 @@ function openWebSocket() {
   chatWs.onclose   = () => {
     if (wsStreaming) endStreamBubble();
     wsStreaming = false;
-    setTimeout(openWebSocket, 2000);  // auto-reconnect
+    setTimeout(openWebSocket, 2000);
   };
   chatWs.onerror   = () => {};
 }
@@ -521,25 +798,34 @@ function openWebSocket() {
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'token':
+      removeThinking();
       ensureStreamBubble();
       bubbleText += msg.content;
+      // Live preview during streaming (plain markdown, rich render on done)
       currentBubble.innerHTML = marked.parse(bubbleText);
       scrollChat();
       break;
     case 'tool_call':
-      appendToolIndicator(msg.name, msg.input);
+      removeThinking();
+      agentPanelAddStep('tool_call', { name: msg.name, input: msg.input });
       break;
     case 'tool_result':
+      agentPanelAddStep('tool_result', { name: msg.name, content: msg.content });
+      // Add a thinking step for next iteration
+      agentPanelAddStep('thinking', {});
       break;
     case 'status':
       appendStatus(msg.content);
       break;
     case 'done':
       endStreamBubble();
+      agentPanelAddStep('done', {});
+      agentPanelSetActive(false);
       enableInput();
       break;
     case 'error':
       endStreamBubble();
+      agentPanelSetActive(false);
       appendAssistantMsg('⚠ ' + msg.content, true);
       enableInput();
       break;
@@ -561,7 +847,15 @@ function ensureStreamBubble() {
 
 function endStreamBubble() {
   if (currentBubble && bubbleText) {
-    currentBubble.innerHTML = marked.parse(bubbleText);
+    // Parse rich components
+    const segments = parseRichBlocks(bubbleText);
+    const hasRich = segments.some(s => s.kind !== 'md');
+    if (hasRich) {
+      currentBubble.innerHTML = '';
+      currentBubble.appendChild(renderRichSegments(segments));
+    } else {
+      currentBubble.innerHTML = marked.parse(bubbleText);
+    }
   }
   currentBubble = null;
   bubbleText = '';
@@ -573,9 +867,12 @@ function appendAssistantMsg(text, isError = false) {
   document.getElementById('chat-welcome')?.remove();
   const wrap = document.createElement('div');
   wrap.className = 'chat-msg assistant';
-  wrap.innerHTML = `
-    <div class="avatar"><span class="material-symbols-rounded">smart_toy</span></div>
-    <div class="bubble${isError ? ' style="color:var(--c-error)"' : ''}">${marked.parse(text)}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (isError) bubble.style.color = 'var(--c-error)';
+  bubble.innerHTML = marked.parse(text);
+  wrap.innerHTML = `<div class="avatar"><span class="material-symbols-rounded">smart_toy</span></div>`;
+  wrap.appendChild(bubble);
   document.getElementById('chat-messages').appendChild(wrap);
   scrollChat();
 }
@@ -588,16 +885,6 @@ function appendUserMsg(text) {
     <div class="bubble">${esc(text)}</div>
     <div class="avatar"><span class="material-symbols-rounded">person</span></div>`;
   document.getElementById('chat-messages').appendChild(wrap);
-  scrollChat();
-}
-
-function appendToolIndicator(name, input) {
-  const container = document.getElementById('chat-messages');
-  const div = document.createElement('div');
-  div.className = 'tool-indicator';
-  const summary = typeof input === 'object' ? (input.query || input.fields?.join(',') || JSON.stringify(input).slice(0, 60)) : '';
-  div.innerHTML = `<span class="material-symbols-rounded">build</span><span>Tool: <strong>${name}</strong>${summary ? ' — ' + esc(summary) : ''}</span>`;
-  container.appendChild(div);
   scrollChat();
 }
 
@@ -653,12 +940,17 @@ function sendMessage(text) {
   currentBubble = null;
   bubbleText = '';
 
+  // Reset agent panel for new turn
+  agentPanelClear();
+  agentPanelSetActive(true);
+  agentPanelAddStep('thinking', {});
+
   appendThinking();
-  setTimeout(removeThinking, 300);
 
   if (!chatWs || chatWs.readyState !== 1) {
     appendAssistantMsg('WebSocket not connected. Reconnecting…', true);
     enableInput(); wsStreaming = false;
+    agentPanelSetActive(false);
     openWebSocket();
     return;
   }
@@ -685,6 +977,8 @@ function initChat() {
       chatMode = btn.dataset.mode;
       document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      // Show/hide agent panel based on mode
+      document.getElementById('agent-panel').style.display = chatMode === 'agent' ? '' : 'none';
     });
   });
 
@@ -692,6 +986,7 @@ function initChat() {
   document.getElementById('clear-history-btn').addEventListener('click', async () => {
     await fetch('/api/history', { method: 'DELETE' });
     document.getElementById('chat-messages').innerHTML = '';
+    agentPanelClear();
     currentBubble = null; bubbleText = ''; wsStreaming = false;
     enableInput();
   });

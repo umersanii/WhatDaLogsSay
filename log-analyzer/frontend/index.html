@@ -328,21 +328,41 @@
         </button>
       </div>
 
-      <div class="chat-container" id="chat-messages">
-        <div class="chat-welcome" id="chat-welcome">
-          <span class="material-symbols-rounded welcome-icon">forum</span>
-          <p>Ask anything about the log file. The AI will use its tools to find specific events, patterns, and statistics.</p>
-          <div class="suggestion-chips" id="suggestion-chips"></div>
-        </div>
-      </div>
+      <div class="chat-body">
+        <!-- Agent working panel (left) -->
+        <aside class="agent-panel" id="agent-panel">
+          <div class="agent-panel-header">
+            <span class="material-symbols-rounded">psychology</span>
+            <span>Agent Working</span>
+            <div class="agent-status-dot" id="agent-dot"></div>
+          </div>
+          <div class="agent-steps" id="agent-steps">
+            <div class="agent-idle-msg">
+              <span class="material-symbols-rounded">tips_and_updates</span>
+              <p>Agent reasoning and tool calls will appear here in real-time.</p>
+            </div>
+          </div>
+        </aside>
 
-      <div class="chat-input-bar">
-        <div class="chat-input-wrap">
-          <textarea id="chat-input" class="chat-textarea" rows="1"
-            placeholder="Ask about errors, patterns, configurations, timelines…"></textarea>
-          <button class="send-btn" id="send-btn" disabled>
-            <span class="material-symbols-rounded">send</span>
-          </button>
+        <!-- Chat messages (right) -->
+        <div class="chat-main">
+          <div class="chat-container" id="chat-messages">
+            <div class="chat-welcome" id="chat-welcome">
+              <span class="material-symbols-rounded welcome-icon">forum</span>
+              <p>Ask anything about the log file. The AI will use its tools to find specific events, patterns, and statistics.</p>
+              <div class="suggestion-chips" id="suggestion-chips"></div>
+            </div>
+          </div>
+
+          <div class="chat-input-bar">
+            <div class="chat-input-wrap">
+              <textarea id="chat-input" class="chat-textarea" rows="1"
+                placeholder="Ask about errors, patterns, configurations, timelines…"></textarea>
+              <button class="send-btn" id="send-btn" disabled>
+                <span class="material-symbols-rounded">send</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>

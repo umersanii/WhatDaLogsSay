@@ -249,6 +249,31 @@ async def run_agent_stream(
         "Answer questions accurately using your tools. Format responses in markdown."
     )
 
+    # Augment system prompt with rich UI instructions
+    system += """
+
+You can embed rich UI components in your response using special blocks. These will be rendered as interactive elements.
+
+COMPONENT SYNTAX — use these EXACTLY as shown, on their own line:
+
+1. Log reference (when citing a specific log event):
+:::log-ref{"ts":"2024-01-01 12:00:00","level":"ERROR","logger":"app.server","msg":"Connection refused to db host"}:::
+
+2. Inline chart (bar or line data):
+:::chart{"type":"bar","title":"Errors per Hour","labels":["10:00","11:00","12:00"],"datasets":[{"label":"Errors","data":[3,12,5],"color":"error"}]}:::
+
+3. Quiz / multiple choice question (for understanding checks or diagnosis):
+:::quiz{"question":"What is the most likely cause of these connection errors?","options":["Database overload","Network partition","Auth failure","Config mismatch"],"answer":1,"explanation":"The repeated timeout pattern with no auth errors points to network/database unavailability."}:::
+
+4. Key metric highlight:
+:::metric{"label":"Peak Error Rate","value":"47/min","trend":"up","color":"error","note":"at 14:32 UTC"}:::
+
+5. Timeline slice (show a sequence of events):
+:::timeline{"title":"Incident Timeline","events":[{"ts":"12:01:05","level":"WARNING","msg":"Latency spike detected"},{"ts":"12:01:12","level":"ERROR","msg":"DB connection timeout"},{"ts":"12:01:45","level":"CRITICAL","msg":"Service health check failed"}]}:::
+
+Use these components naturally when they add value. For data/statistics, prefer charts. When referencing specific log lines, use log-ref. For diagnosis questions, use quiz. Always wrap numbers/key findings in metric blocks.
+"""
+
     messages = history[-30:] + [{"role": "user", "content": question}]
     max_iters = 10
 
