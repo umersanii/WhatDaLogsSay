@@ -31,19 +31,19 @@ let selectedModel = null;   // null = server default
 function loadSettings() {
   const s = JSON.parse(localStorage.getItem('logai_settings') || '{}');
   const html = document.documentElement;
-  html.dataset.theme     = s.theme     || 'light';
-  html.dataset.palette   = s.palette   || 'blue';
+  html.dataset.theme     = s.theme     || 'dark';
+  html.dataset.palette   = s.palette   || 'violet';
   html.dataset.density   = s.density   || 'normal';
   html.dataset.fontScale = s.fontScale || 1;
   html.style.setProperty('--font-scale', s.fontScale || 1);
 
   // Sync settings UI
   document.querySelectorAll('.seg-btn[data-setting="theme"]').forEach(b =>
-    b.classList.toggle('active', b.dataset.value === (s.theme || 'light')));
+    b.classList.toggle('active', b.dataset.value === (s.theme || 'dark')));
   document.querySelectorAll('.seg-btn[data-setting="density"]').forEach(b =>
     b.classList.toggle('active', b.dataset.value === (s.density || 'normal')));
   document.querySelectorAll('.palette-dot').forEach(d =>
-    d.classList.toggle('active', d.dataset.palette === (s.palette || 'blue')));
+    d.classList.toggle('active', d.dataset.palette === (s.palette || 'violet')));
   const fs = parseFloat(s.fontScale || 1);
   document.getElementById('font-scale').value = fs;
   document.getElementById('font-scale-val').textContent = Math.round(fs * 100) + '%';
