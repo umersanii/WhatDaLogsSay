@@ -210,16 +210,21 @@ def build_index(chunks: list[dict], embed_model) -> Any:
     """Embed chunks and build FAISS IndexFlatIP. Saves to DATA_DIR."""
     import faiss
     texts = [c["text"] for c in chunks]
-    embs = embed_model.encode(texts, batch_size=64, show_progress_bar=False).astype(np.float32)
+    print(f"[RAG] Encoding {len(texts)} texts (avg len {sum(len(t) for t in texts)//max(len(texts),1)} chars)…")
+    embs = embed_model.encode(texts, batch_size=64, show_progress_bar=True).astype(np.float32)
+    print(f"[RAG] Embeddings shape: {embs.shape}. Normalizing…")
     faiss.normalize_L2(embs)
 
     index = faiss.IndexFlatIP(embs.shape[1])
     index.add(embs)
+    print(f"[RAG] FAISS index built with {index.ntotal} vectors (dim={embs.shape[1]}).")
 
     DATA_DIR.mkdir(exist_ok=True)
+    print(f"[RAG] Saving index to {INDEX_NPY} and metadata to {META_JSON}…")
     np.save(INDEX_NPY, embs)
     with open(META_JSON, "w") as f:
         json.dump(chunks, f)
+    print("[RAG] Index saved.")
 
     return index
 

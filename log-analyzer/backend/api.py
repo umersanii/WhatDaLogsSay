@@ -81,13 +81,29 @@ def _process_log(path: Path):
         summary = build_summary(events, profile, client)
         state.summary = summary
 
-        state.processing_step = "Building RAG index…"
+        state.processing_step = "Building RAG index… (chunking log events)"
+        print(f"[RAG] Step 1: Building chunks from {len(events)} events…")
         char = summary.get("characterization", {})
         chunks = build_chunks(events, char)
+        type_counts = {}
+        for c in chunks:
+            t = c.get("chunk_type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+        print(f"[RAG] Built {len(chunks)} chunks: {type_counts}")
+
+        state.processing_step = "Building RAG index… (loading embedding model)"
+        print("[RAG] Step 2: Loading SentenceTransformer model all-MiniLM-L6-v2…")
         from sentence_transformers import SentenceTransformer
         embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        print("[RAG] Embedding model loaded.")
+
+        state.processing_step = "Building RAG index… (encoding chunks & building FAISS index)"
+        print(f"[RAG] Step 3: Encoding {len(chunks)} chunks and building FAISS index…")
         index = build_index(chunks, embed_model)
+        print(f"[RAG] FAISS index built. Total vectors: {index.ntotal}")
+
         state.rag_store = RAGStore(index, chunks, embed_model)
+        print("[RAG] RAGStore ready.")
 
         state.processing_step = "Ready"
         state.is_processing = False
