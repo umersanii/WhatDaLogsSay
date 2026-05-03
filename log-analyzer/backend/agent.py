@@ -254,29 +254,49 @@ async def run_agent_stream(
 
     for _ in range(max_iters):
         full_text = []
-        tool_use_blocks = []
+        accumulated_tool_calls: dict = {}
 
-        async with client.chat.completions.stream(
+        stream = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             max_tokens=4096,
-            system=system,
+            messages=[{"role": "system", "content": system}] + messages,
             tools=TOOLS,
-            messages=messages,
-        ) as stream:
-            async for event in stream:
-                if event.choices and event.choices[0].delta.content:
-                    yield {"type": "token", "content": event.choices[0].delta.content}
-                    full_text.append(event.choices[0].delta.content)
+            stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield {"type": "token", "content": delta.content}
+                full_text.append(delta.content)
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in accumulated_tool_calls:
+                        accumulated_tool_calls[idx] = {"id": tc.id or "", "name": "", "arguments": ""}
+                    if tc.id:
+                        accumulated_tool_calls[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            accumulated_tool_calls[idx]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
 
-            final = await stream.get_final_message()
+        tool_use_blocks = list(accumulated_tool_calls.values())
+        assistant_msg: dict = {"role": "assistant", "content": "".join(full_text)}
 
-        # Tool calls in Groq/OpenAI format come in the message content
-        if final.choices[0].message.tool_calls:
-            tool_use_blocks = final.choices[0].message.tool_calls
+        if tool_use_blocks:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                }
+                for tc in tool_use_blocks
+            ]
 
-        messages.append({"role": "assistant", "content": final.choices[0].message.content or ""})
-        if final.choices[0].message.tool_calls:
-            messages[-1]["tool_calls"] = final.choices[0].message.tool_calls
+        messages.append(assistant_msg)
 
         if not tool_use_blocks:
             break
@@ -284,19 +304,19 @@ async def run_agent_stream(
         # Execute tools
         tool_results = []
         for tb in tool_use_blocks:
-            yield {"type": "tool_call", "name": tb.function.name, "input": tb.function.arguments}
+            yield {"type": "tool_call", "name": tb["name"], "input": tb["arguments"]}
             try:
-                args = json.loads(tb.function.arguments) if isinstance(tb.function.arguments, str) else tb.function.arguments
-            except:
+                args = json.loads(tb["arguments"]) if isinstance(tb["arguments"], str) else tb["arguments"]
+            except Exception:
                 args = {}
-            result_str = execute_tool(tb.function.name, args, state)
-            yield {"type": "tool_result", "name": tb.function.name, "content": result_str[:300]}
+            result_str = execute_tool(tb["name"], args, state)
+            yield {"type": "tool_result", "name": tb["name"], "content": result_str[:300]}
             tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tb.id,
+                "role": "tool",
+                "tool_call_id": tb["id"],
                 "content": result_str,
             })
-        messages.append({"role": "user", "content": tool_results})
+        messages.extend(tool_results)
 
     yield {"type": "done"}
 
@@ -325,17 +345,20 @@ async def run_rag_stream(
 
     yield {"type": "status", "content": f"Retrieved {len(results)} relevant log chunks…"}
 
-    async with client.chat.completions.stream(
+    stream = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         max_tokens=3000,
-        system=system,
-        messages=[{
-            "role": "user",
-            "content": f"<log_excerpts>\n{context}\n</log_excerpts>\n\nQuestion: {question}",
-        }],
-    ) as stream:
-        async for event in stream:
-            if event.choices and event.choices[0].delta.content:
-                yield {"type": "token", "content": event.choices[0].delta.content}
+        messages=[
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": f"<log_excerpts>\n{context}\n</log_excerpts>\n\nQuestion: {question}",
+            },
+        ],
+        stream=True,
+    )
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield {"type": "token", "content": chunk.choices[0].delta.content}
 
     yield {"type": "done"}
