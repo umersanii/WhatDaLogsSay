@@ -290,9 +290,13 @@ COMPONENT SYNTAX (each block on its own line, valid JSON inside):
 
 :::chart{"type":"bar","title":"Log Levels","labels":["ERROR","INFO","WARNING"],"datasets":[{"label":"Count","data":[457,121,14],"color":"error"}]}:::
 
+:::chart{"type":"bar","title":"Logger Activity","labels":["recognition","__unparsed__"],"datasets":[{"label":"Total","data":[592,16],"color":"primary"},{"label":"Error %","data":[77.2,0],"color":"error"}]}:::
+
 :::log-ref{"ts":"2024-01-01 12:00:01","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed"}:::
 
 :::timeline{"title":"Event Sequence","events":[{"ts":"12:01:05","level":"WARNING","msg":"First warning"},{"ts":"12:01:12","level":"ERROR","msg":"First error"}]}:::
+
+:::quiz{"question":"What is the root cause?","options":["A","B","C"],"answer":0,"explanation":"Because..."}:::
 
 BE DIRECT AND CONCISE. Answer only what was asked. Do not repeat general stats on every response. If the user asks for the first 10 log events, show them with :::log-ref::: blocks — nothing else. If asked for top errors, list them. If asked a yes/no question, answer it directly in one sentence.
 """
