@@ -39,7 +39,12 @@
 
     <div id="upload-progress" class="upload-progress hidden">
       <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
-      <p class="progress-label" id="progress-label">Uploading…</p>
+      <div class="progress-step-row">
+        <span class="progress-label" id="progress-label">Uploading…</span>
+        <span class="progress-pct" id="progress-pct">0%</span>
+      </div>
+      <!-- Live sub-step log -->
+      <div class="progress-log" id="progress-log"></div>
     </div>
   </div>
 </div>
@@ -74,6 +79,10 @@
     </div>
 
     <div class="nav-bottom">
+      <button class="nav-item" id="sessions-btn">
+        <span class="material-symbols-rounded">history</span>
+        <span class="nav-label">Sessions</span>
+      </button>
       <button class="nav-item" id="upload-new-btn">
         <span class="material-symbols-rounded">upload_file</span>
         <span class="nav-label">Upload</span>
@@ -377,8 +386,32 @@
   </main>
 </div>
 
-<!-- ── Settings drawer ── -->
+<!-- ── Sessions drawer ── -->
 <div class="drawer-overlay" id="drawer-overlay"></div>
+<aside class="settings-drawer sessions-drawer" id="sessions-drawer">
+  <div class="drawer-header">
+    <h3>Sessions</h3>
+    <div style="display:flex;gap:0.375rem;align-items:center">
+      <button class="btn-tonal" id="save-session-btn" style="font-size:0.75rem;padding:0.25rem 0.625rem">
+        <span class="material-symbols-rounded" style="font-size:0.9rem">save</span>Save current
+      </button>
+      <button class="btn-icon" id="close-sessions">
+        <span class="material-symbols-rounded">close</span>
+      </button>
+    </div>
+  </div>
+  <div class="drawer-body" style="padding:0">
+    <div id="sessions-list" class="sessions-list">
+      <div class="sessions-empty" id="sessions-empty">
+        <span class="material-symbols-rounded" style="font-size:2rem;opacity:0.3">history</span>
+        <p>No saved sessions yet.<br>Start a chat and save it.</p>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Settings drawer ── -->
+
 <aside class="settings-drawer" id="settings-drawer">
   <div class="drawer-header">
     <h3>Appearance</h3>

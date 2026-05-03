@@ -43,9 +43,14 @@ class AppState:
         self.rag_store:     Optional[RAGStore] = None
         self.log_filename:  str             = ""
         self.is_processing: bool            = False
-        self.processing_step: str           = ""   # human-readable progress
+        self.processing_step: str           = ""
+        self.processing_detail: list[str]   = []  # live sub-step log lines
         self.processing_error: str          = ""
         self.conversation_history: list[dict] = []
+
+    def log(self, msg: str):
+        """Append a detail line (thread-safe for simple appends in CPython)."""
+        self.processing_detail.append(msg)
 
     def reset(self):
         self.__init__()
@@ -72,42 +77,53 @@ def _process_log(path: Path):
     client = make_sync_client(DEFAULT_PROVIDER)
     try:
         state.processing_step = "Parsing log file…"
+        state.log("Reading and parsing log file…")
         events, profile = parse_log_file(path)
         state.events = events
+        state.log(f"Parsed {len(events):,} events  ·  format: {profile.get('name', 'unknown')}")
 
-        state.processing_step = "Computing statistics and characterising log with AI…"
+        state.processing_step = "Characterising log with AI…"
+        state.log("Running AI characterisation (detecting log type, entities, prompts)…")
         summary = build_summary(events, profile, client)
         state.summary = summary
-
-        state.processing_step = "Building RAG index… (chunking log events)"
-        print(f"[RAG] Step 1: Building chunks from {len(events)} events…")
         char = summary.get("characterization", {})
+        state.log(f"Detected: {char.get('log_type', 'unknown log type')}")
+
+        state.processing_step = "Building RAG index… (chunking)"
+        state.log("Splitting log into semantic chunks…")
         chunks = build_chunks(events, char)
-        type_counts = {}
+        type_counts: dict = {}
         for c in chunks:
             t = c.get("chunk_type", "unknown")
             type_counts[t] = type_counts.get(t, 0) + 1
-        print(f"[RAG] Built {len(chunks)} chunks: {type_counts}")
+        state.log(f"Created {len(chunks)} chunks  ·  " + "  ".join(f"{t}: {n}" for t, n in type_counts.items()))
 
-        state.processing_step = "Building RAG index… (loading embedding model)"
-        print("[RAG] Step 2: Loading SentenceTransformer model all-MiniLM-L6-v2…")
+        state.processing_step = "Building RAG index… (loading model)"
+        state.log("Loading sentence embedding model (all-MiniLM-L6-v2)…")
         from sentence_transformers import SentenceTransformer
         embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("[RAG] Embedding model loaded.")
+        state.log("Embedding model ready.")
 
-        state.processing_step = "Building RAG index… (encoding chunks & building FAISS index)"
-        print(f"[RAG] Step 3: Encoding {len(chunks)} chunks and building FAISS index…")
-        index = build_index(chunks, embed_model)
-        print(f"[RAG] FAISS index built. Total vectors: {index.ntotal}")
+        state.processing_step = "Building RAG index… (encoding)"
+        state.log(f"Encoding {len(chunks)} chunks into vectors…")
+
+        def _on_batch(done: int, total: int):
+            pct = int(done / total * 100)
+            state.log(f"Embedding batches: {done}/{total}  ({pct}%)")
+            state.processing_step = f"Building RAG index… ({pct}% encoded)"
+
+        index = build_index(chunks, embed_model, progress_cb=_on_batch)
+        state.log(f"FAISS index built  ·  {index.ntotal} vectors  ·  dim={index.d}")
 
         state.rag_store = RAGStore(index, chunks, embed_model)
-        print("[RAG] RAGStore ready.")
+        state.log("RAG store ready — you can start chatting!")
 
         state.processing_step = "Ready"
         state.is_processing = False
 
     except Exception:
         state.processing_error = traceback.format_exc()
+        state.log("Error: " + state.processing_error.splitlines()[-1])
         state.processing_step  = "Error"
         state.is_processing    = False
 
@@ -146,6 +162,7 @@ async def get_status():
     return {
         "is_processing":    _state.is_processing,
         "step":             _state.processing_step,
+        "detail":           list(_state.processing_detail),
         "error":            _state.processing_error,
         "has_summary":      _state.summary is not None,
         "has_rag":          _state.rag_store is not None,
@@ -254,6 +271,64 @@ async def clear_history():
 @app.get("/api/models")
 async def list_models():
     return {"models": get_models_list()}
+
+
+# ── Session persistence ───────────────────────────────────────────────────────
+
+SESSIONS_DIR = DATA_DIR / "sessions"
+SESSIONS_DIR.mkdir(exist_ok=True)
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    sessions = []
+    for p in sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        try:
+            meta = json.loads(p.read_text())
+            sessions.append({
+                "id":       p.stem,
+                "filename": meta.get("filename", ""),
+                "saved_at": meta.get("saved_at", ""),
+                "messages": len(meta.get("messages", [])),
+                "summary_title": meta.get("summary_title", ""),
+            })
+        except Exception:
+            pass
+    return {"sessions": sessions}
+
+
+@app.post("/api/sessions/save")
+async def save_session(req: dict):
+    import time, hashlib
+    sid = hashlib.md5(f"{time.time()}".encode()).hexdigest()[:10]
+    path = SESSIONS_DIR / f"{sid}.json"
+    payload = {
+        "id":            sid,
+        "filename":      _state.log_filename,
+        "saved_at":      __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "summary_title": req.get("title", _state.log_filename),
+        "messages":      req.get("messages", []),
+        "level_counts":  _state.summary.get("level_counts", {}) if _state.summary else {},
+        "total_events":  len(_state.events),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    return {"id": sid, "saved_at": payload["saved_at"]}
+
+
+@app.get("/api/sessions/{sid}")
+async def load_session(sid: str):
+    path = SESSIONS_DIR / f"{sid}.json"
+    if not path.exists():
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+    return json.loads(path.read_text())
+
+
+@app.delete("/api/sessions/{sid}")
+async def delete_session(sid: str):
+    path = SESSIONS_DIR / f"{sid}.json"
+    if path.exists():
+        path.unlink()
+    return {"status": "deleted"}
 
 
 # ── WebSocket chat ────────────────────────────────────────────────────────────

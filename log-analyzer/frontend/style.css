@@ -1132,3 +1132,101 @@ body {
 }
 .rich-summary-banner .material-symbols-rounded { color: var(--c-primary); flex-shrink: 0; }
 
+
+/* ══════════════════ PROGRESS LOG (live sub-steps) ══════════════════════════ */
+.progress-step-row {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 0.5rem;
+}
+.progress-pct {
+  font-size: 0.72rem; font-weight: 700; color: var(--c-primary);
+}
+.progress-log {
+  margin-top: 0.5rem;
+  max-height: 160px; overflow-y: auto;
+  border-radius: 6px;
+  background: var(--c-surface-var);
+  padding: 0.375rem 0.5rem;
+  display: flex; flex-direction: column; gap: 2px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.68rem;
+  scrollbar-width: thin;
+}
+.progress-log:empty { display: none; }
+.plog-line {
+  display: flex; align-items: baseline; gap: 0.375rem;
+  padding: 1px 0;
+  animation: plog-in 0.15s ease;
+  color: var(--c-on-surface);
+  line-height: 1.4;
+}
+.plog-line:last-child { color: var(--c-primary); font-weight: 600; }
+@keyframes plog-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.plog-tick {
+  color: var(--c-success); flex-shrink: 0; font-size: 0.6rem;
+}
+.plog-tick.spin {
+  color: var(--c-primary);
+  animation: plog-spin 0.8s linear infinite;
+  display: inline-block;
+}
+@keyframes plog-spin { to { transform: rotate(360deg); } }
+
+/* ══════════════════ SESSIONS DRAWER ════════════════════════════════════════ */
+.sessions-drawer { width: 340px; }
+
+.sessions-list {
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+  max-height: calc(100vh - 80px);
+}
+.sessions-empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.5rem; padding: 2.5rem 1rem;
+  color: var(--c-on-surface-var); font-size: 0.78rem;
+  text-align: center; line-height: 1.6;
+}
+.session-item {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--c-outline);
+  cursor: pointer; transition: background 0.12s;
+}
+.session-item:hover { background: var(--c-surface-var); }
+.session-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  background: var(--c-primary-cont); color: var(--c-primary);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.session-icon .material-symbols-rounded { font-size: 1.1rem; }
+.session-body { flex: 1; min-width: 0; }
+.session-title {
+  font-size: 0.8rem; font-weight: 600; color: var(--c-on-surface);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-meta {
+  font-size: 0.67rem; color: var(--c-on-surface-var);
+  margin-top: 2px; display: flex; gap: 0.5rem;
+}
+.session-actions { display: flex; gap: 0.25rem; flex-shrink: 0; }
+.session-del-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--c-on-surface-var); padding: 4px;
+  border-radius: 4px; transition: color 0.12s;
+  display: flex; align-items: center;
+}
+.session-del-btn:hover { color: var(--c-error); }
+.session-del-btn .material-symbols-rounded { font-size: 0.9rem; }
+
+/* Save toast */
+.save-toast {
+  position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+  background: var(--c-on-surface); color: var(--c-surface);
+  padding: 0.5rem 1.25rem; border-radius: 2rem;
+  font-size: 0.8rem; font-weight: 600;
+  z-index: 9999; pointer-events: none;
+  animation: toast-in 0.2s ease, toast-out 0.3s ease 2s forwards;
+}
+@keyframes toast-in  { from { opacity:0; transform:translateX(-50%) translateY(8px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
+@keyframes toast-out { to   { opacity:0; transform:translateX(-50%) translateY(8px); } }

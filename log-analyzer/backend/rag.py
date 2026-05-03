@@ -206,13 +206,22 @@ def build_chunks(events: list[LogEvent], characterization: dict) -> list[dict]:
     return all_chunks
 
 
-def build_index(chunks: list[dict], embed_model) -> Any:
+def build_index(chunks: list[dict], embed_model, progress_cb=None) -> Any:
     """Embed chunks and build FAISS IndexFlatIP. Saves to DATA_DIR."""
     import faiss
     texts = [c["text"] for c in chunks]
-    print(f"[RAG] Encoding {len(texts)} texts (avg len {sum(len(t) for t in texts)//max(len(texts),1)} chars)…")
-    embs = embed_model.encode(texts, batch_size=64, show_progress_bar=True).astype(np.float32)
-    print(f"[RAG] Embeddings shape: {embs.shape}. Normalizing…")
+    batch_size = 32
+    all_embs = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        emb = embed_model.encode(batch, show_progress_bar=False).astype(np.float32)
+        all_embs.append(emb)
+        done = min(i + batch_size, len(texts))
+        if progress_cb:
+            progress_cb(done, len(texts))
+    import numpy as _np
+    embs = _np.concatenate(all_embs, axis=0)
     faiss.normalize_L2(embs)
 
     index = faiss.IndexFlatIP(embs.shape[1])

@@ -108,6 +108,9 @@ async function startUpload(file) {
     if (!res.ok) throw new Error(await res.text());
     bar.style.width = '20%';
     label.textContent = 'Processing…';
+    _lastDetailCount = 0;
+    const logEl = document.getElementById('progress-log');
+    if (logEl) logEl.innerHTML = '';
     startPolling();
   } catch (e) {
     label.textContent = 'Error: ' + e.message;
@@ -130,18 +133,52 @@ function startPolling() {
 }
 
 const STEP_PROGRESS = {
-  'Uploading…': 15,
-  'Parsing log file…': 35,
-  'Computing statistics and characterising log with Claude…': 60,
-  'Building RAG index…': 80,
-  'Ready': 100,
+  'Uploading…':                         8,
+  'Parsing log file…':                 20,
+  'Characterising log with AI…':       45,
+  'Building RAG index… (chunking)':    58,
+  'Building RAG index… (loading model)': 65,
+  'Building RAG index… (encoding)':    72,
+  'Ready':                            100,
 };
+
+let _lastDetailCount = 0;
+
 function updateProgress(s) {
   const bar   = document.getElementById('progress-bar');
   const label = document.getElementById('progress-label');
-  const pct   = STEP_PROGRESS[s.step] || (s.is_processing ? 50 : 100);
-  bar.style.width = pct + '%';
-  label.textContent = s.step || 'Processing…';
+  const pct   = document.getElementById('progress-pct');
+
+  // Compute progress — if step contains a % use that
+  let prog = STEP_PROGRESS[s.step];
+  if (!prog) {
+    const m = s.step && s.step.match(/\((\d+)%/);
+    prog = m ? (65 + Math.round(parseInt(m[1]) * 0.25)) : (s.is_processing ? 50 : 100);
+  }
+  bar.style.width = prog + '%';
+  if (label) label.textContent = s.step || 'Processing…';
+  if (pct) pct.textContent = prog + '%';
+
+  // Append new detail lines
+  const logEl = document.getElementById('progress-log');
+  if (logEl && s.detail) {
+    const newLines = s.detail.slice(_lastDetailCount);
+    newLines.forEach((line, idx) => {
+      const isLast = (idx === newLines.length - 1) && s.is_processing;
+      const div = document.createElement('div');
+      div.className = 'plog-line';
+      const tick = document.createElement('span');
+      tick.className = isLast ? 'plog-tick spin' : 'plog-tick';
+      tick.textContent = isLast ? '◌' : '✓';
+      div.appendChild(tick);
+      const txt = document.createElement('span');
+      txt.textContent = line;
+      div.appendChild(txt);
+      logEl.appendChild(div);
+    });
+    if (newLines.length) logEl.scrollTop = logEl.scrollHeight;
+    _lastDetailCount = s.detail.length;
+  }
 }
 
 async function onLoadComplete() {
@@ -1303,6 +1340,136 @@ function initChat() {
   });
 }
 
+// ── Sessions ──────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'save-toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+function collectChatMessages() {
+  const msgs = [];
+  document.querySelectorAll('#chat-messages .chat-msg').forEach(wrap => {
+    const isUser = wrap.classList.contains('user');
+    const bubble = wrap.querySelector('.bubble');
+    if (bubble) msgs.push({ role: isUser ? 'user' : 'assistant', html: bubble.innerHTML });
+  });
+  return msgs;
+}
+
+function restoreChatMessages(messages) {
+  const container = document.getElementById('chat-messages');
+  document.getElementById('chat-welcome')?.remove();
+  messages.forEach(m => {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant');
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = m.html || '';
+    if (m.role === 'user') {
+      wrap.appendChild(bubble);
+      wrap.insertAdjacentHTML('beforeend', `<div class="avatar"><span class="material-symbols-rounded">person</span></div>`);
+    } else {
+      wrap.innerHTML = `<div class="avatar"><span class="material-symbols-rounded">smart_toy</span></div>`;
+      wrap.appendChild(bubble);
+    }
+    container.appendChild(wrap);
+  });
+  scrollChat();
+}
+
+async function saveCurrentSession() {
+  const messages = collectChatMessages();
+  if (!messages.length) { showToast('Nothing to save — start a chat first'); return; }
+  const title = document.getElementById('dash-filename')?.textContent || 'Session';
+  const res = await fetch('/api/sessions/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, messages }),
+  });
+  if (res.ok) {
+    showToast('Session saved ✓');
+    renderSessionsList();
+  }
+}
+
+async function renderSessionsList() {
+  const data = await fetch('/api/sessions').then(r => r.json()).catch(() => ({ sessions: [] }));
+  const sessions = data.sessions || [];
+  const list  = document.getElementById('sessions-list');
+  const empty = document.getElementById('sessions-empty');
+  if (!list) return;
+  // Remove old items but keep empty placeholder
+  list.querySelectorAll('.session-item').forEach(el => el.remove());
+
+  if (!sessions.length) {
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+
+  sessions.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'session-item';
+    const savedAt = s.saved_at ? new Date(s.saved_at).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+    item.innerHTML = `
+      <div class="session-icon"><span class="material-symbols-rounded">description</span></div>
+      <div class="session-body">
+        <div class="session-title">${esc(s.summary_title || s.filename || 'Session')}</div>
+        <div class="session-meta">
+          <span>${savedAt}</span>
+          <span>${s.messages} message${s.messages !== 1 ? 's' : ''}</span>
+        </div>
+      </div>
+      <div class="session-actions">
+        <button class="session-del-btn" title="Delete"><span class="material-symbols-rounded">delete</span></button>
+      </div>`;
+
+    item.querySelector('.session-body').addEventListener('click', async () => {
+      const full = await fetch(`/api/sessions/${s.id}`).then(r => r.json());
+      if (full.messages) {
+        document.getElementById('chat-messages').innerHTML = '';
+        restoreChatMessages(full.messages);
+        navigateTo('chat');
+        closeSessions();
+        showToast(`Loaded: ${s.summary_title || s.filename}`);
+      }
+    });
+    item.querySelector('.session-del-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await fetch(`/api/sessions/${s.id}`, { method: 'DELETE' });
+      item.remove();
+      if (!list.querySelectorAll('.session-item').length && empty) empty.style.display = '';
+    });
+    list.appendChild(item);
+  });
+}
+
+function closeSessions() {
+  document.getElementById('sessions-drawer')?.classList.remove('open');
+  document.getElementById('drawer-overlay')?.classList.remove('active');
+}
+
+function initSessions() {
+  const drawer = document.getElementById('sessions-drawer');
+  const overlay = document.getElementById('drawer-overlay');
+
+  document.getElementById('sessions-btn')?.addEventListener('click', () => {
+    drawer?.classList.add('open');
+    overlay?.classList.add('active');
+    renderSessionsList();
+  });
+  document.getElementById('close-sessions')?.addEventListener('click', closeSessions);
+  document.getElementById('save-session-btn')?.addEventListener('click', saveCurrentSession);
+  overlay?.addEventListener('click', () => {
+    document.getElementById('settings-drawer')?.classList.remove('open');
+    closeSessions();
+    overlay.classList.remove('active');
+  });
+}
+
 // ── Settings drawer ───────────────────────────────────────────────────────────
 function initSettings() {
   const drawer  = document.getElementById('settings-drawer');
@@ -1312,7 +1479,7 @@ function initSettings() {
 
   document.getElementById('settings-btn').addEventListener('click', open);
   document.getElementById('close-settings').addEventListener('click', close);
-  overlay.addEventListener('click', close);
+  // overlay click handled centrally in initSessions
 
   document.querySelectorAll('.seg-btn[data-setting="theme"]').forEach(b =>
     b.addEventListener('click', () => {
@@ -1356,6 +1523,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initUpload();
   initTimeline();
   initChat();
+  initSessions();
   initSettings();
   loadModels();
 
