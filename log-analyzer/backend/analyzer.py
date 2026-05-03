@@ -1,5 +1,5 @@
 """
-Generic log analyzer — builds statistical summaries and uses Claude
+Generic log analyzer — builds statistical summaries and uses Groq/Llama
 to characterize any log type without domain-specific hard-coding.
 """
 import re
@@ -7,7 +7,7 @@ import json
 from collections import defaultdict, Counter
 from datetime import datetime
 from typing import Optional
-import anthropic
+from groq import Groq
 
 from backend.parser import LogEvent, FormatProfile
 
@@ -157,7 +157,7 @@ def compute_stats(events: list[LogEvent], profile: FormatProfile) -> dict:
     }
 
 
-# ── Claude characterization ───────────────────────────────────────────────────
+# ── Log characterization ─────────────────────────────────────────────────────
 
 _CHARACTERIZE_PROMPT = """You are given a sample from an unknown log file plus basic statistics.
 
@@ -170,8 +170,8 @@ Analyze the sample and return a JSON object with EXACTLY these keys (no markdown
   "key_event_types": ["important recurring event verbs/nouns, e.g. detection, reconnect, init"],
   "important_loggers": ["logger names that carry the most signal (skip noisy HTTP/access loggers)"],
   "noisy_loggers": ["logger names that are high-volume but low-signal, e.g. aiohttp.access, httpx"],
-  "agent_system_prompt": "A complete system prompt (300-500 words) for a Claude agent that answers questions about THIS specific log. Include inferred domain knowledge. The agent has tools: search_logs, get_stats, get_timeline, get_samples.",
-  "rag_system_prompt": "A complete system prompt (200-300 words) for a Claude RAG assistant that receives raw log excerpts as context. Be specific about the system domain."
+  "agent_system_prompt": "A complete system prompt (300-500 words) for an AI agent that answers questions about THIS specific log. Include inferred domain knowledge. The agent has tools: search_logs, get_stats, get_timeline, get_samples.",
+  "rag_system_prompt": "A complete system prompt (200-300 words) for an AI RAG assistant that receives raw log excerpts as context. Be specific about the system domain."
 }}
 
 Stats:
@@ -205,10 +205,10 @@ def _build_sample(events: list[LogEvent], n: int = 180) -> str:
 def characterize_log(
     events: list[LogEvent],
     stats: dict,
-    client: anthropic.Anthropic,
+    client: Groq,
 ) -> dict:
     """
-    Ask Claude to characterize the log. Returns the parsed JSON dict.
+    Ask Groq/Llama to characterize the log. Returns the parsed JSON dict.
     Falls back to a safe default on any error.
     """
     sample = _build_sample(events)
@@ -227,12 +227,12 @@ def characterize_log(
     )
 
     try:
-        resp = client.messages.create(
-            model="claude-opus-4-6",
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = resp.content[0].text.strip()
+        text = resp.choices[0].message.content.strip()
         # Strip markdown fences if present
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
@@ -260,10 +260,10 @@ def characterize_log(
 def build_summary(
     events: list[LogEvent],
     profile: FormatProfile,
-    client: anthropic.Anthropic,
+    client: Groq,
 ) -> dict:
     """
-    Full pipeline: compute stats then Claude characterization.
+    Full pipeline: compute stats then log characterization.
     Returns the complete summary dict including characterization.
     """
     stats = compute_stats(events, profile)

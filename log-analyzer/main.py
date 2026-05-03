@@ -7,8 +7,10 @@ Set GROQ in environment before running.
 import os
 import sys
 import argparse
+from dotenv import load_dotenv
 
 def main():
+    load_dotenv()
     if not (os.environ.get("GROQ") or os.environ.get("ANTHROPIC_API_KEY")):
         print("ERROR: GROQ environment variable not set.")
         print("  Add your API key to .env file or set environment variable.")

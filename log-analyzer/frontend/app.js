@@ -163,14 +163,27 @@ function showError(msg) {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function populateDashboard(summary, status) {
   const levels = summary.level_counts || {};
+  const total = summary.total_events || 0;
   const errors = (levels.ERROR || 0) + (levels.CRITICAL || 0);
+  const warnings = levels.WARNING || 0;
 
   document.getElementById('dash-filename').textContent = status.filename || 'Loaded';
-  document.getElementById('s-total').textContent    = fmt(summary.total_events || 0);
+  document.getElementById('s-total').textContent    = fmt(total);
   document.getElementById('s-errors').textContent   = fmt(errors);
-  document.getElementById('s-warnings').textContent = fmt(levels.WARNING || 0);
+  document.getElementById('s-warnings').textContent = fmt(warnings);
   document.getElementById('s-loggers').textContent  = fmt((summary.top_loggers || []).length);
-  document.getElementById('s-rag').textContent      = fmt(status.rag_chunk_count || 0);
+
+  // Error rate percentage
+  const errorRate = total > 0 ? ((errors / total) * 100).toFixed(1) : 0;
+  document.getElementById('s-error-rate').textContent = `${errorRate}% error rate`;
+
+  // Health score: 100 - error_rate - (warnings_rate * 0.5)
+  const warningRate = total > 0 ? (warnings / total) * 100 : 0;
+  const health = Math.max(0, Math.min(100, 100 - errorRate - (warningRate * 0.5)));
+  const healthColor = health > 80 ? 'var(--c-success)' : health > 50 ? 'var(--c-warning)' : 'var(--c-error)';
+  const healthLabel = health > 80 ? '✓ Good' : health > 50 ? '⚠ Fair' : '✗ Poor';
+  document.getElementById('s-health').textContent = Math.round(health) + '%';
+  document.querySelector('[id="s-health"]').parentElement.parentElement.style.borderLeftColor = healthColor;
 
   const dr = summary.date_range || {};
   const span = dr.span_hours > 48
@@ -210,6 +223,21 @@ function populateDashboard(summary, status) {
     tbody.innerHTML = '';
     bursts.forEach(b => {
       tbody.insertAdjacentHTML('beforeend', `<tr><td class="ts-cell">${b.hour}</td><td><span class="level-badge level-ERROR">${fmt(b.count)}</span></td></tr>`);
+    });
+  }
+
+  // Error samples
+  const samples = summary.error_samples || [];
+  if (samples.length > 0) {
+    document.getElementById('samples-card').style.display = '';
+    const samplesList = document.getElementById('error-samples-list');
+    samplesList.innerHTML = '';
+    samples.slice(0, 8).forEach(s => {
+      samplesList.insertAdjacentHTML('beforeend', `
+        <div class="error-sample-item">
+          <div class="error-sample-meta">${s.logger} · ${s.ts}</div>
+          <div class="error-sample-msg" title="${s.msg}">${s.msg.substring(0, 120)}${s.msg.length > 120 ? '…' : ''}</div>
+        </div>`);
     });
   }
 }

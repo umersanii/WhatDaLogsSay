@@ -26,8 +26,9 @@
     <div class="upload-icon-wrap">
       <span class="material-symbols-rounded upload-icon">description</span>
     </div>
-    <h1 class="upload-title">Log Analyzer</h1>
-    <p class="upload-sub">Upload any log file — the AI will detect its format and characterize your system automatically.</p>
+    <h1 class="upload-title">🔍 Log Analyzer</h1>
+    <p class="upload-sub">Upload any log file — AI-powered analysis with Groq + Llama.</p>
+    <p class="upload-sub-small">Automatic format detection, error characterization, pattern discovery, and intelligent chat.</p>
 
     <label class="upload-drop-zone" id="drop-zone">
       <input type="file" id="file-input" accept=".log,.txt,.out,.gz" hidden />
@@ -105,11 +106,12 @@
             <div class="stat-label">Total Events</div>
           </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card stat-error-rate">
           <span class="material-symbols-rounded stat-icon" style="color:var(--c-error)">error</span>
           <div class="stat-body">
             <div class="stat-value" id="s-errors">—</div>
             <div class="stat-label">Errors / Criticals</div>
+            <div class="stat-secondary" id="s-error-rate">—</div>
           </div>
         </div>
         <div class="stat-card">
@@ -133,11 +135,11 @@
             <div class="stat-label">Unique Loggers</div>
           </div>
         </div>
-        <div class="stat-card">
-          <span class="material-symbols-rounded stat-icon" style="color:var(--c-tertiary)">database</span>
+        <div class="stat-card stat-health">
+          <span class="material-symbols-rounded stat-icon" style="color:var(--c-tertiary)">favorite</span>
           <div class="stat-body">
-            <div class="stat-value" id="s-rag">—</div>
-            <div class="stat-label">RAG Chunks</div>
+            <div class="stat-value" id="s-health">—</div>
+            <div class="stat-label">System Health</div>
           </div>
         </div>
       </div>
@@ -155,7 +157,7 @@
         </div>
       </div>
 
-      <!-- Level distribution chart -->
+      <!-- Charts row -->
       <div class="charts-row">
         <div class="card chart-card">
           <div class="card-header">
@@ -170,6 +172,17 @@
             <span>Top Loggers</span>
           </div>
           <div class="chart-wrap"><canvas id="chart-loggers"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Quick samples card -->
+      <div class="card" id="samples-card" style="display:none">
+        <div class="card-header">
+          <span class="material-symbols-rounded" style="color:var(--c-error)">problem_queue</span>
+          <span>Error Samples</span>
+        </div>
+        <div class="card-body">
+          <div class="error-samples-list" id="error-samples-list"></div>
         </div>
       </div>
 

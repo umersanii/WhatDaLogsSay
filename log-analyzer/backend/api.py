@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-import anthropic
+from groq import Groq, AsyncGroq
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -50,21 +50,21 @@ class AppState:
 
 _state = AppState()
 
-# ── Anthropic/GROQ client helpers ─────────────────────────────────────────────
+# ── Groq client helpers ──────────────────────────────────────────────────────
 
 def _get_api_key() -> str:
-    api_key = os.environ.get("GROQ") or os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("GROQ") or os.environ.get("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("GROQ or ANTHROPIC_API_KEY environment variable must be set.")
+        raise RuntimeError("GROQ or GROQ_API_KEY environment variable must be set.")
     return api_key
 
 
-def _sync_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=_get_api_key())
+def _sync_client() -> Groq:
+    return Groq(api_key=_get_api_key())
 
 
-def _async_client() -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(api_key=_get_api_key())
+def _async_client() -> AsyncGroq:
+    return AsyncGroq(api_key=_get_api_key())
 
 # ── Background processing ─────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ def _process_log(path: Path):
         events, profile = parse_log_file(path)
         state.events = events
 
-        state.processing_step = "Computing statistics and characterising log with Claude…"
+        state.processing_step = "Computing statistics and characterising log with AI…"
         summary = build_summary(events, profile, client)
         state.summary = summary
 

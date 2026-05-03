@@ -1,13 +1,13 @@
 """
-Claude agent with tool use + streaming for both Agent and RAG modes.
+AI agent with tool use + streaming for both Agent and RAG modes.
 Tools query AppState (pre-built summary + events + RAGStore).
-The agent/RAG system prompts come from Claude's own log characterization.
+The agent/RAG system prompts come from the AI's own log characterization.
 """
 import json
 from datetime import datetime
 from typing import AsyncIterator, TYPE_CHECKING
 
-import anthropic
+from groq import AsyncGroq
 
 if TYPE_CHECKING:
     from backend.api import AppState
@@ -16,87 +16,99 @@ if TYPE_CHECKING:
 
 TOOLS = [
     {
-        "name": "search_logs",
-        "description": (
-            "Semantic vector search over the full log using FAISS. "
-            "Returns the most relevant log excerpts for a natural-language query. "
-            "Use this to find specific events, error messages, configuration values, "
-            "model names, IP addresses, or any content that may not be in the summary."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Natural language search query"},
-                "top_k": {"type": "integer", "default": 6, "description": "Number of results (1–20)"},
-                "chunk_type": {
-                    "type": "string",
-                    "enum": ["time_window", "error_burst", "logger_thread", "init_sequence"],
-                    "description": "Optional: restrict to one chunk type",
+        "type": "function",
+        "function": {
+            "name": "search_logs",
+            "description": (
+                "Semantic vector search over the full log using FAISS. "
+                "Returns the most relevant log excerpts for a natural-language query. "
+                "Use this to find specific events, error messages, configuration values, "
+                "model names, IP addresses, or any content that may not be in the summary."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language search query"},
+                    "top_k": {"type": "integer", "default": 6, "description": "Number of results (1–20)"},
+                    "chunk_type": {
+                        "type": "string",
+                        "enum": ["time_window", "error_burst", "logger_thread", "init_sequence"],
+                        "description": "Optional: restrict to one chunk type",
+                    },
                 },
+                "required": ["query"],
             },
-            "required": ["query"],
         },
     },
     {
-        "name": "get_stats",
-        "description": (
-            "Return structured statistics from the pre-computed log summary. "
-            "Covers: level counts, top loggers, date range, events-per-hour, "
-            "errors-per-hour, error samples, top patterns, entities, and "
-            "the Claude-generated system characterization."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Which summary fields to return. Empty = return all. "
-                        "Options: level_counts, top_loggers, date_range, events_per_hour, "
-                        "errors_per_hour, top_patterns, error_samples, error_bursts, "
-                        "entities, characterization, format"
-                    ),
+        "type": "function",
+        "function": {
+            "name": "get_stats",
+            "description": (
+                "Return structured statistics from the pre-computed log summary. "
+                "Covers: level counts, top loggers, date range, events-per-hour, "
+                "errors-per-hour, error samples, top patterns, entities, and "
+                "the system characterization."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Which summary fields to return. Empty = return all. "
+                            "Options: level_counts, top_loggers, date_range, events_per_hour, "
+                            "errors_per_hour, top_patterns, error_samples, error_bursts, "
+                            "entities, characterization, format"
+                        ),
+                    },
                 },
+                "required": [],
             },
-            "required": [],
         },
     },
     {
-        "name": "get_timeline",
-        "description": (
-            "Return paginated log events, optionally filtered by level, keyword, or time range. "
-            "Use to trace event sequences around a specific time or incident."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "page":    {"type": "integer", "default": 1, "description": "Page number (1-based)"},
-                "limit":   {"type": "integer", "default": 50, "description": "Events per page (max 200)"},
-                "level":   {"type": "string", "description": "Filter by level (INFO/WARNING/ERROR/CRITICAL)"},
-                "keyword": {"type": "string", "description": "Case-insensitive substring in msg"},
-                "ts_from": {"type": "string", "description": "ISO datetime lower bound"},
-                "ts_to":   {"type": "string", "description": "ISO datetime upper bound"},
+        "type": "function",
+        "function": {
+            "name": "get_timeline",
+            "description": (
+                "Return paginated log events, optionally filtered by level, keyword, or time range. "
+                "Use to trace event sequences around a specific time or incident."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page":    {"type": "integer", "default": 1, "description": "Page number (1-based)"},
+                    "limit":   {"type": "integer", "default": 50, "description": "Events per page (max 200)"},
+                    "level":   {"type": "string", "description": "Filter by level (INFO/WARNING/ERROR/CRITICAL)"},
+                    "keyword": {"type": "string", "description": "Case-insensitive substring in msg"},
+                    "ts_from": {"type": "string", "description": "ISO datetime lower bound"},
+                    "ts_to":   {"type": "string", "description": "ISO datetime upper bound"},
+                },
+                "required": [],
             },
-            "required": [],
         },
     },
     {
-        "name": "get_samples",
-        "description": (
-            "Return sample log lines from a specific logger or matching a pattern. "
-            "Useful for understanding what a particular component logs, finding config values, "
-            "or checking a specific subsystem's behaviour."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "logger":  {"type": "string", "description": "Logger name (partial match OK)"},
-                "level":   {"type": "string", "description": "Filter by log level"},
-                "keyword": {"type": "string", "description": "Substring filter on message"},
-                "limit":   {"type": "integer", "default": 30, "description": "Max results (max 150)"},
+        "type": "function",
+        "function": {
+            "name": "get_samples",
+            "description": (
+                "Return sample log lines from a specific logger or matching a pattern. "
+                "Useful for understanding what a particular component logs, finding config values, "
+                "or checking a specific subsystem's behaviour."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "logger":  {"type": "string", "description": "Logger name (partial match OK)"},
+                    "level":   {"type": "string", "description": "Filter by log level"},
+                    "keyword": {"type": "string", "description": "Substring filter on message"},
+                    "limit":   {"type": "integer", "default": 30, "description": "Max results (max 150)"},
+                },
+                "required": [],
             },
-            "required": [],
         },
     },
 ]
@@ -225,11 +237,11 @@ async def run_agent_stream(
     question: str,
     history: list[dict],
     state: "AppState",
-    client: anthropic.AsyncAnthropic,
+    client: AsyncGroq,
 ) -> AsyncIterator[dict]:
     """
     Yields dicts: {type: "token"|"tool_call"|"tool_result"|"done"|"error"}
-    Agent loop: call Claude → stream text → execute tools → repeat.
+    Agent loop: call Groq → stream text → execute tools → repeat.
     """
     char = state.summary.get("characterization", {}) if state.summary else {}
     system = char.get("agent_system_prompt") or (
@@ -244,36 +256,41 @@ async def run_agent_stream(
         full_text = []
         tool_use_blocks = []
 
-        async with client.messages.stream(
-            model="claude-opus-4-6",
+        async with client.chat.completions.stream(
+            model="llama-3.3-70b-versatile",
             max_tokens=4096,
-            thinking={"type": "adaptive"},
             system=system,
             tools=TOOLS,
             messages=messages,
         ) as stream:
             async for event in stream:
-                if (
-                    event.type == "content_block_delta"
-                    and event.delta.type == "text_delta"
-                ):
-                    yield {"type": "token", "content": event.delta.text}
-                    full_text.append(event.delta.text)
+                if event.choices and event.choices[0].delta.content:
+                    yield {"type": "token", "content": event.choices[0].delta.content}
+                    full_text.append(event.choices[0].delta.content)
 
             final = await stream.get_final_message()
 
-        tool_use_blocks = [b for b in final.content if b.type == "tool_use"]
-        messages.append({"role": "assistant", "content": final.content})
+        # Tool calls in Groq/OpenAI format come in the message content
+        if final.choices[0].message.tool_calls:
+            tool_use_blocks = final.choices[0].message.tool_calls
 
-        if final.stop_reason != "tool_use" or not tool_use_blocks:
+        messages.append({"role": "assistant", "content": final.choices[0].message.content or ""})
+        if final.choices[0].message.tool_calls:
+            messages[-1]["tool_calls"] = final.choices[0].message.tool_calls
+
+        if not tool_use_blocks:
             break
 
         # Execute tools
         tool_results = []
         for tb in tool_use_blocks:
-            yield {"type": "tool_call", "name": tb.name, "input": tb.input}
-            result_str = execute_tool(tb.name, tb.input, state)
-            yield {"type": "tool_result", "name": tb.name, "content": result_str[:300]}
+            yield {"type": "tool_call", "name": tb.function.name, "input": tb.function.arguments}
+            try:
+                args = json.loads(tb.function.arguments) if isinstance(tb.function.arguments, str) else tb.function.arguments
+            except:
+                args = {}
+            result_str = execute_tool(tb.function.name, args, state)
+            yield {"type": "tool_result", "name": tb.function.name, "content": result_str[:300]}
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tb.id,
@@ -287,7 +304,7 @@ async def run_agent_stream(
 async def run_rag_stream(
     question: str,
     state: "AppState",
-    client: anthropic.AsyncAnthropic,
+    client: AsyncGroq,
     top_k: int = 8,
 ) -> AsyncIterator[dict]:
     """
@@ -308,10 +325,9 @@ async def run_rag_stream(
 
     yield {"type": "status", "content": f"Retrieved {len(results)} relevant log chunks…"}
 
-    async with client.messages.stream(
-        model="claude-opus-4-6",
+    async with client.chat.completions.stream(
+        model="llama-3.3-70b-versatile",
         max_tokens=3000,
-        thinking={"type": "adaptive"},
         system=system,
         messages=[{
             "role": "user",
@@ -319,10 +335,7 @@ async def run_rag_stream(
         }],
     ) as stream:
         async for event in stream:
-            if (
-                event.type == "content_block_delta"
-                and event.delta.type == "text_delta"
-            ):
-                yield {"type": "token", "content": event.delta.text}
+            if event.choices and event.choices[0].delta.content:
+                yield {"type": "token", "content": event.choices[0].delta.content}
 
     yield {"type": "done"}

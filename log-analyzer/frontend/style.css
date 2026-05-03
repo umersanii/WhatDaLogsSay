@@ -681,6 +681,26 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--c-outline); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--c-on-surface-var); }
 
+/* ── Stat card variants ── */
+.stat-card.stat-error-rate .stat-secondary { font-size: 0.7rem; color: var(--c-error); margin-top: 2px; font-weight: 500; }
+.stat-card.stat-health { border-left: 4px solid var(--c-success); }
+
+/* ── Error samples ── */
+.error-samples-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.error-sample-item {
+  padding: 0.75rem;
+  background: var(--c-surface-var);
+  border-radius: var(--density-radius);
+  border-left: 3px solid var(--c-error);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.error-sample-item:hover { background: var(--c-outline); }
+.error-sample-meta { font-size: 0.7rem; color: var(--c-on-surface-var); }
+.error-sample-msg { font-size: 0.85rem; color: var(--c-on-surface); margin-top: 4px; line-height: 1.4; }
+
+.upload-sub-small { font-size: 0.8rem; color: var(--c-on-surface-var); margin-top: 0.25rem; }
+
 /* ══════════════════ UTILITY ══════════════════════════════════════════════════ */
 .hidden { display: none !important; }
 .material-symbols-rounded { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
