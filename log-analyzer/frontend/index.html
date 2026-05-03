@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-palette="violet" data-density="normal" data-font-scale="1">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log Analyzer</title>
+
+  <!-- Google Fonts: Material Symbols + Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
+  <!-- Marked.js for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── Upload overlay ── -->
+<div id="upload-overlay" class="overlay active">
+  <div class="upload-card">
+    <div class="upload-icon-wrap">
+      <span class="material-symbols-rounded upload-icon">description</span>
+    </div>
+    <h1 class="upload-title">Log Analyzer</h1>
+    <p class="upload-sub">Upload any log file — the AI will detect its format and characterize your system automatically.</p>
+
+    <label class="upload-drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept=".log,.txt,.out,.gz" hidden />
+      <span class="material-symbols-rounded drop-icon">upload_file</span>
+      <span class="drop-text">Drop a log file here or <u>browse</u></span>
+      <span class="drop-hint">.log · .txt · .out — up to 200 MB</span>
+    </label>
+
+    <div id="upload-progress" class="upload-progress hidden">
+      <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+      <p class="progress-label" id="progress-label">Uploading…</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── App shell ── -->
+<div id="app" class="app hidden">
+
+  <!-- Nav rail -->
+  <nav class="nav-rail" id="nav-rail">
+    <div class="nav-brand">
+      <span class="material-symbols-rounded brand-icon">hub</span>
+      <span class="brand-label">LogAI</span>
+    </div>
+
+    <div class="nav-items">
+      <button class="nav-item active" data-page="dashboard">
+        <span class="material-symbols-rounded">dashboard</span>
+        <span class="nav-label">Dashboard</span>
+      </button>
+      <button class="nav-item" data-page="timeline">
+        <span class="material-symbols-rounded">view_timeline</span>
+        <span class="nav-label">Timeline</span>
+      </button>
+      <button class="nav-item" data-page="analytics">
+        <span class="material-symbols-rounded">bar_chart</span>
+        <span class="nav-label">Analytics</span>
+      </button>
+      <button class="nav-item" data-page="chat">
+        <span class="material-symbols-rounded">smart_toy</span>
+        <span class="nav-label">AI Chat</span>
+      </button>
+    </div>
+
+    <div class="nav-bottom">
+      <button class="nav-item" id="upload-new-btn">
+        <span class="material-symbols-rounded">upload_file</span>
+        <span class="nav-label">Upload</span>
+      </button>
+      <button class="nav-item" id="settings-btn">
+        <span class="material-symbols-rounded">tune</span>
+        <span class="nav-label">Settings</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="main-content" id="main-content">
+
+    <!-- ── Dashboard page ── -->
+    <section class="page active" id="page-dashboard">
+      <div class="page-header">
+        <div>
+          <h2 class="page-title">Dashboard</h2>
+          <p class="page-sub" id="dash-filename">No file loaded</p>
+        </div>
+        <div class="header-chips" id="dash-chips"></div>
+      </div>
+
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon">list_alt</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-total">—</div>
+            <div class="stat-label">Total Events</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon" style="color:var(--c-error)">error</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-errors">—</div>
+            <div class="stat-label">Errors / Criticals</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon" style="color:var(--c-warning)">warning</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-warnings">—</div>
+            <div class="stat-label">Warnings</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon" style="color:var(--c-primary)">schedule</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-span">—</div>
+            <div class="stat-label">Time Span</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon">developer_board</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-loggers">—</div>
+            <div class="stat-label">Unique Loggers</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <span class="material-symbols-rounded stat-icon" style="color:var(--c-tertiary)">database</span>
+          <div class="stat-body">
+            <div class="stat-value" id="s-rag">—</div>
+            <div class="stat-label">RAG Chunks</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- System characterization card -->
+      <div class="card char-card" id="char-card" style="display:none">
+        <div class="card-header">
+          <span class="material-symbols-rounded">auto_awesome</span>
+          <span>AI System Characterization</span>
+        </div>
+        <div class="card-body">
+          <div class="char-type" id="char-type"></div>
+          <p class="char-desc" id="char-desc"></p>
+          <div class="chip-row" id="char-entities"></div>
+        </div>
+      </div>
+
+      <!-- Level distribution chart -->
+      <div class="charts-row">
+        <div class="card chart-card">
+          <div class="card-header">
+            <span class="material-symbols-rounded">donut_large</span>
+            <span>Level Distribution</span>
+          </div>
+          <div class="chart-wrap"><canvas id="chart-levels"></canvas></div>
+        </div>
+        <div class="card chart-card">
+          <div class="card-header">
+            <span class="material-symbols-rounded">stacked_bar_chart</span>
+            <span>Top Loggers</span>
+          </div>
+          <div class="chart-wrap"><canvas id="chart-loggers"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Error bursts -->
+      <div class="card" id="burst-card" style="display:none">
+        <div class="card-header">
+          <span class="material-symbols-rounded" style="color:var(--c-error)">bolt</span>
+          <span>Error Bursts</span>
+        </div>
+        <div class="card-body">
+          <table class="data-table" id="burst-table">
+            <thead><tr><th>Hour</th><th>Error Count</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Timeline page ── -->
+    <section class="page" id="page-timeline">
+      <div class="page-header">
+        <h2 class="page-title">Timeline</h2>
+        <div class="header-actions">
+          <button class="btn-icon" id="tl-refresh-btn" title="Refresh">
+            <span class="material-symbols-rounded">refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="filter-bar">
+        <div class="filter-select-wrap">
+          <span class="material-symbols-rounded filter-icon">filter_list</span>
+          <select id="tl-level" class="filter-select">
+            <option value="">All Levels</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO">INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+            <option value="CRITICAL">CRITICAL</option>
+          </select>
+        </div>
+        <div class="filter-input-wrap">
+          <span class="material-symbols-rounded filter-icon">search</span>
+          <input id="tl-keyword" class="filter-input" type="text" placeholder="Search messages…" />
+        </div>
+        <input id="tl-from" class="filter-input date-input" type="datetime-local" title="From" />
+        <input id="tl-to"   class="filter-input date-input" type="datetime-local" title="To" />
+        <button class="btn-filled" id="tl-search-btn">Apply</button>
+        <button class="btn-tonal" id="tl-clear-btn">Clear</button>
+      </div>
+
+      <!-- Events table -->
+      <div class="card table-card">
+        <table class="data-table" id="tl-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Level</th>
+              <th>Logger</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="tl-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="pagination" id="tl-pagination">
+        <button class="btn-icon" id="tl-prev">
+          <span class="material-symbols-rounded">chevron_left</span>
+        </button>
+        <span class="page-indicator" id="tl-page-info">—</span>
+        <button class="btn-icon" id="tl-next">
+          <span class="material-symbols-rounded">chevron_right</span>
+        </button>
+        <select id="tl-limit" class="filter-select compact">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- ── Analytics page ── -->
+    <section class="page" id="page-analytics">
+      <div class="page-header">
+        <h2 class="page-title">Analytics</h2>
+      </div>
+
+      <div class="card chart-card-wide">
+        <div class="card-header">
+          <span class="material-symbols-rounded">timeline</span>
+          <span>Events Per Hour</span>
+        </div>
+        <div class="chart-wrap tall"><canvas id="chart-hours"></canvas></div>
+      </div>
+
+      <div class="charts-row">
+        <div class="card chart-card">
+          <div class="card-header">
+            <span class="material-symbols-rounded">trending_up</span>
+            <span>Errors Per Hour</span>
+          </div>
+          <div class="chart-wrap"><canvas id="chart-errors-hour"></canvas></div>
+        </div>
+        <div class="card chart-card">
+          <div class="card-header">
+            <span class="material-symbols-rounded">pattern</span>
+            <span>Top Message Patterns</span>
+          </div>
+          <div class="card-body pattern-list" id="pattern-list"></div>
+        </div>
+      </div>
+
+      <!-- Entities -->
+      <div class="card">
+        <div class="card-header">
+          <span class="material-symbols-rounded">fingerprint</span>
+          <span>Extracted Entities</span>
+        </div>
+        <div class="card-body">
+          <div class="entity-grid" id="entity-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Chat page ── -->
+    <section class="page" id="page-chat">
+      <div class="page-header">
+        <h2 class="page-title">AI Chat</h2>
+        <div class="mode-toggle">
+          <button class="mode-btn active" data-mode="agent" id="mode-agent">
+            <span class="material-symbols-rounded">smart_toy</span>Agent
+          </button>
+          <button class="mode-btn" data-mode="rag" id="mode-rag">
+            <span class="material-symbols-rounded">search</span>RAG
+          </button>
+        </div>
+        <button class="btn-tonal" id="clear-history-btn">
+          <span class="material-symbols-rounded">delete_sweep</span>Clear
+        </button>
+      </div>
+
+      <div class="chat-container" id="chat-messages">
+        <div class="chat-welcome" id="chat-welcome">
+          <span class="material-symbols-rounded welcome-icon">forum</span>
+          <p>Ask anything about the log file. The AI will use its tools to find specific events, patterns, and statistics.</p>
+          <div class="suggestion-chips" id="suggestion-chips"></div>
+        </div>
+      </div>
+
+      <div class="chat-input-bar">
+        <div class="chat-input-wrap">
+          <textarea id="chat-input" class="chat-textarea" rows="1"
+            placeholder="Ask about errors, patterns, configurations, timelines…"></textarea>
+          <button class="send-btn" id="send-btn" disabled>
+            <span class="material-symbols-rounded">send</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Settings drawer ── -->
+<div class="drawer-overlay" id="drawer-overlay"></div>
+<aside class="settings-drawer" id="settings-drawer">
+  <div class="drawer-header">
+    <h3>Appearance</h3>
+    <button class="btn-icon" id="close-settings">
+      <span class="material-symbols-rounded">close</span>
+    </button>
+  </div>
+
+  <div class="drawer-body">
+    <div class="setting-section">
+      <div class="setting-label">Theme</div>
+      <div class="segmented-btn">
+        <button class="seg-btn active" data-setting="theme" data-value="dark">
+          <span class="material-symbols-rounded">dark_mode</span>Dark
+        </button>
+        <button class="seg-btn" data-setting="theme" data-value="light">
+          <span class="material-symbols-rounded">light_mode</span>Light
+        </button>
+      </div>
+    </div>
+
+    <div class="setting-section">
+      <div class="setting-label">Color Palette</div>
+      <div class="palette-grid">
+        <button class="palette-dot active" data-palette="violet" style="background:var(--palette-violet-seed)" title="Violet"></button>
+        <button class="palette-dot" data-palette="blue"   style="background:var(--palette-blue-seed)"   title="Blue"></button>
+        <button class="palette-dot" data-palette="teal"   style="background:var(--palette-teal-seed)"   title="Teal"></button>
+        <button class="palette-dot" data-palette="orange" style="background:var(--palette-orange-seed)" title="Orange"></button>
+        <button class="palette-dot" data-palette="rose"   style="background:var(--palette-rose-seed)"   title="Rose"></button>
+      </div>
+    </div>
+
+    <div class="setting-section">
+      <div class="setting-label">Density</div>
+      <div class="segmented-btn">
+        <button class="seg-btn" data-setting="density" data-value="compact">Compact</button>
+        <button class="seg-btn active" data-setting="density" data-value="normal">Normal</button>
+        <button class="seg-btn" data-setting="density" data-value="comfortable">Comfortable</button>
+      </div>
+    </div>
+
+    <div class="setting-section">
+      <div class="setting-label">Font Size <span id="font-scale-val">100%</span></div>
+      <input type="range" id="font-scale" min="0.8" max="1.4" step="0.05" value="1" class="slider" />
+    </div>
+  </div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>
