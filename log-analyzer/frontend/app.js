@@ -488,30 +488,181 @@ function initTimeline() {
 
 // ── Rich Component Renderer ───────────────────────────────────────────────────
 
+const COLOR_MAP_CSS = {
+  error:   'var(--c-error)',
+  warning: 'var(--c-warning)',
+  success: 'var(--c-success)',
+  info:    'var(--c-info)',
+  primary: 'var(--c-primary)',
+};
+
 // Parse :::type{json}::: blocks out of markdown text
 function parseRichBlocks(text) {
   const BLOCK_RE = /:::([a-z-]+)(\{[\s\S]*?\}):::/g;
   const segments = [];
-  let last = 0;
-  let m;
+  let last = 0, m;
   while ((m = BLOCK_RE.exec(text)) !== null) {
     if (m.index > last) segments.push({ kind: 'md', text: text.slice(last, m.index) });
-    try {
-      const data = JSON.parse(m[2]);
-      segments.push({ kind: m[1], data });
-    } catch {
-      segments.push({ kind: 'md', text: m[0] });
-    }
+    try { segments.push({ kind: m[1], data: JSON.parse(m[2]) }); }
+    catch { segments.push({ kind: 'md', text: m[0] }); }
     last = m.index + m[0].length;
   }
   if (last < text.length) segments.push({ kind: 'md', text: text.slice(last) });
   return segments;
 }
 
+// ── Auto-detection: convert plain AI text into rich widgets ──────────────────
+
+function autoDetectWidgets(text) {
+  // Returns an array of segments (same format as parseRichBlocks)
+  const segments = [];
+
+  // 1. Extract explicit :::blocks::: first
+  const withBlocks = parseRichBlocks(text);
+
+  // 2. For each markdown segment, try to auto-detect patterns
+  withBlocks.forEach(seg => {
+    if (seg.kind !== 'md') { segments.push(seg); return; }
+    const sub = autoDetectInText(seg.text);
+    sub.forEach(s => segments.push(s));
+  });
+
+  return segments;
+}
+
+function autoDetectInText(text) {
+  const out = [];
+
+  // ── Pattern: Log snippets block ──────────────────────────────────────────
+  // Detect blocks like "Timestamp: ...\nLogger: ...\nMessage: ..."
+  const LOG_BLOCK_RE = /Timestamp:\s*([^\n]+)\s*\n\s*Logger:\s*([^\n]+)\s*\n\s*Message:\s*([^\n]+)/g;
+  const logMatches = [];
+  let lm;
+  while ((lm = LOG_BLOCK_RE.exec(text)) !== null) logMatches.push(lm);
+
+  if (logMatches.length > 0) {
+    // Split text around the first log block start
+    const firstIdx = logMatches[0].index;
+    if (firstIdx > 0) {
+      const before = text.slice(0, firstIdx).trim();
+      if (before) out.push({ kind: 'md', text: before });
+    }
+
+    // Group identical messages as clusters
+    const clusters = {};
+    logMatches.forEach(m => {
+      const msg = m[3].trim();
+      if (!clusters[msg]) clusters[msg] = { ts: [], logger: m[2].trim(), level: 'ERROR' };
+      clusters[msg].ts.push(m[1].trim());
+    });
+    out.push({ kind: 'log-cluster-group', data: Object.entries(clusters).map(([msg, v]) => ({ msg, ...v })) });
+
+    const lastMatch = logMatches[logMatches.length - 1];
+    const after = text.slice(lastMatch.index + lastMatch[0].length).trim();
+    if (after) out.push(...autoDetectInText(after));
+    return out;
+  }
+
+  // ── Pattern: Level distribution list (ERROR: 457, WARNING: 14, …) ───────
+  const LEVEL_LIST_RE = /\b(ERROR|WARNING|INFO|DEBUG|CRITICAL|RAW)\s*:\s*(\d[\d,]*)/gi;
+  const levelMatches = [...text.matchAll(LEVEL_LIST_RE)];
+  if (levelMatches.length >= 2) {
+    const labels = [], data = [], colors = [];
+    const LEVEL_COLORS = { ERROR: 'error', CRITICAL: 'error', WARNING: 'warning', INFO: 'success', DEBUG: 'info', RAW: 'primary' };
+    levelMatches.forEach(m => {
+      labels.push(m[1].toUpperCase());
+      data.push(parseInt(m[2].replace(/,/g, ''), 10));
+      colors.push(LEVEL_COLORS[m[1].toUpperCase()] || 'primary');
+    });
+
+    // Extract surrounding prose
+    const firstLevelIdx = text.search(LEVEL_LIST_RE);
+    const lastLevelMatch = levelMatches[levelMatches.length - 1];
+    const beforeLevel = text.slice(0, firstLevelIdx).trim();
+    const afterLevel  = text.slice(lastLevelMatch.index + lastLevelMatch[0].length).trim();
+
+    if (beforeLevel) out.push({ kind: 'md', text: beforeLevel });
+
+    // Metric grid + donut chart
+    const total = data.reduce((a, b) => a + b, 0);
+    const metrics = labels.map((l, i) => ({ label: l, value: String(data[i]), color: colors[i], note: total ? `${Math.round(data[i]/total*100)}% of total` : '' }));
+    out.push({ kind: 'metric-grid', data: { metrics } });
+    out.push({ kind: 'chart', data: { type: 'doughnut', title: 'Log Level Distribution', labels, datasets: [{ label: 'Events', data, color: colors[0] }], multiColor: true } });
+
+    if (afterLevel) out.push(...autoDetectInText(afterLevel));
+    return out;
+  }
+
+  // ── Pattern: ratio statement (32.64:1 or 32.64 errors per warning) ───────
+  const RATIO_RE = /(\d+(?:\.\d+)?)\s*(?:errors?)\s+(?:per|to|vs\.?)\s+(?:warning|warn)/i;
+  const ratioM = text.match(RATIO_RE);
+  if (ratioM) {
+    const ratio = parseFloat(ratioM[1]);
+    const errPct = Math.round((ratio / (ratio + 1)) * 100);
+    out.push({ kind: 'ratio', data: { title: 'Error vs Warning Ratio', a: { label: 'Errors', pct: errPct, color: 'var(--c-error)' }, b: { label: 'Warnings', pct: 100 - errPct, color: 'var(--c-warning)' }, note: `${ratio.toFixed(1)} errors per warning` } });
+    // Keep the rest as markdown
+    const idx = text.search(RATIO_RE);
+    const after = text.slice(idx + ratioM[0].length).trim();
+    if (idx > 0) out.push({ kind: 'md', text: text.slice(0, idx) });
+    if (after) out.push(...autoDetectInText(after));
+    return out;
+  }
+
+  // ── Pattern: "Logger: X\nTotal Logs: N\nError Rate: N%" ──────────────────
+  const LOGGER_BLOCK_RE = /Logger:\s*(\S+)\s*\n\s*Total Logs?:\s*(\d+)\s*\n\s*Error Rate:\s*([\d.]+%?)/gi;
+  const loggerMatches = [...text.matchAll(LOGGER_BLOCK_RE)];
+  if (loggerMatches.length >= 1) {
+    const firstIdx = loggerMatches[0].index;
+    const lastM    = loggerMatches[loggerMatches.length - 1];
+    const before   = text.slice(0, firstIdx).trim();
+    const after    = text.slice(lastM.index + lastM[0].length).trim();
+    if (before) out.push({ kind: 'md', text: before });
+
+    const rows = loggerMatches.map(m => ({ key: m[1], val: `${fmt(parseInt(m[2]))} events · ${m[3]} errors` }));
+    out.push({ kind: 'stat-grid', data: { title: 'Logger Activity', rows } });
+
+    if (after) out.push(...autoDetectInText(after));
+    return out;
+  }
+
+  // No pattern matched — pass through as markdown
+  out.push({ kind: 'md', text });
+  return out;
+}
+
+// ── Segment → DOM ─────────────────────────────────────────────────────────────
+
 function renderRichSegments(segments) {
   const container = document.createElement('div');
   container.className = 'rich-content';
+
+  // Collect consecutive metrics into a grid
+  let metricBuf = [];
+  const flushMetrics = () => {
+    if (!metricBuf.length) return;
+    if (metricBuf.length === 1) {
+      container.appendChild(renderMetric(metricBuf[0]));
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'rich-metric-grid';
+      metricBuf.forEach(d => grid.appendChild(renderMetric(d)));
+      container.appendChild(grid);
+    }
+    metricBuf = [];
+  };
+
   segments.forEach(seg => {
+    if (seg.kind === 'metric') { metricBuf.push(seg.data); return; }
+    if (seg.kind === 'metric-grid') {
+      flushMetrics();
+      const grid = document.createElement('div');
+      grid.className = 'rich-metric-grid';
+      (seg.data.metrics || []).forEach(d => grid.appendChild(renderMetric(d)));
+      container.appendChild(grid);
+      return;
+    }
+    flushMetrics();
+
     if (seg.kind === 'md') {
       if (seg.text.trim()) {
         const md = document.createElement('div');
@@ -524,19 +675,26 @@ function renderRichSegments(segments) {
       if (el) container.appendChild(el);
     }
   });
+  flushMetrics();
   return container;
 }
 
 function renderRichComponent(kind, data) {
   switch (kind) {
-    case 'log-ref':    return renderLogRef(data);
-    case 'chart':      return renderInlineChart(data);
-    case 'quiz':       return renderQuiz(data);
-    case 'metric':     return renderMetric(data);
-    case 'timeline':   return renderTimeline2(data);
-    default:           return null;
+    case 'log-ref':          return renderLogRef(data);
+    case 'chart':            return renderInlineChart(data);
+    case 'quiz':             return renderQuiz(data);
+    case 'metric':           return renderMetric(data);
+    case 'timeline':         return renderTimeline2(data);
+    case 'stat-grid':        return renderStatGrid(data);
+    case 'ratio':            return renderRatio(data);
+    case 'log-cluster-group':return renderLogClusterGroup(data);
+    case 'summary':          return renderSummaryBanner(data);
+    default:                 return null;
   }
 }
+
+// ── Individual widget renderers ───────────────────────────────────────────────
 
 function renderLogRef(d) {
   const div = document.createElement('div');
@@ -548,16 +706,14 @@ function renderLogRef(d) {
       <span class="rich-log-logger">${esc(d.logger || '')}</span>
     </div>
     <div class="rich-log-msg">${esc(d.msg || '')}</div>`;
+  div.title = 'Click to find in Timeline';
   div.addEventListener('click', () => {
-    // Jump to timeline with this timestamp
     if (d.ts) {
       tlFilters.keyword = d.msg ? d.msg.slice(0, 40) : '';
       document.getElementById('tl-keyword').value = tlFilters.keyword;
-      loadTimeline(1);
-      navigateTo('timeline');
+      loadTimeline(1); navigateTo('timeline');
     }
   });
-  div.title = 'Click to find in Timeline';
   return div;
 }
 
@@ -567,45 +723,157 @@ function renderInlineChart(d) {
   if (d.title) {
     const h = document.createElement('div');
     h.className = 'rich-chart-title';
-    h.textContent = d.title;
+    h.innerHTML = `<span class="material-symbols-rounded" style="font-size:0.85rem">${d.type === 'doughnut' || d.type === 'pie' ? 'donut_large' : d.type === 'line' ? 'show_chart' : 'bar_chart'}</span>${esc(d.title)}`;
     wrap.appendChild(h);
   }
   const canvas = document.createElement('canvas');
-  canvas.height = 160;
+  canvas.height = d.type === 'doughnut' || d.type === 'pie' ? 180 : 160;
   wrap.appendChild(canvas);
 
   const c = getChartColors();
   const colorMap = { error: c.error, warning: c.warning, success: c.success, primary: c.primary, info: c.info };
+  const PALETTE = [c.primary, c.error, c.warning, c.success, c.info, c.secondary, c.tertiary];
 
-  const datasets = (d.datasets || []).map(ds => ({
-    label: ds.label || '',
-    data: ds.data || [],
-    backgroundColor: (colorMap[ds.color] || c.primary) + 'cc',
-    borderColor: colorMap[ds.color] || c.primary,
-    borderWidth: 1.5,
-    borderRadius: 4,
-    fill: d.type === 'line',
-    tension: 0.3,
-    pointRadius: d.type === 'line' ? 3 : 0,
-  }));
+  const isDoughnut = d.type === 'doughnut' || d.type === 'pie';
+
+  const datasets = (d.datasets || []).map((ds, di) => {
+    const base = colorMap[ds.color] || c.primary;
+    const bgColors = d.multiColor
+      ? (ds.data || []).map((_, i) => (PALETTE[i % PALETTE.length]) + (isDoughnut ? 'ee' : 'bb'))
+      : base + (isDoughnut ? 'ee' : 'bb');
+    return {
+      label: ds.label || '',
+      data: ds.data || [],
+      backgroundColor: bgColors,
+      borderColor: d.multiColor ? (isDoughnut ? 'transparent' : undefined) : base,
+      borderWidth: isDoughnut ? 0 : 1.5,
+      borderRadius: isDoughnut ? 0 : 5,
+      fill: d.type === 'line',
+      tension: 0.35,
+      pointRadius: d.type === 'line' ? 3 : 0,
+    };
+  });
 
   setTimeout(() => {
+    const isXY = !isDoughnut;
     new Chart(canvas.getContext('2d'), {
-      type: d.type || 'bar',
+      type: isDoughnut ? 'doughnut' : (d.type || 'bar'),
       data: { labels: d.labels || [], datasets },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: { display: datasets.length > 1, labels: { color: c.onSurface, boxWidth: 10, font: { size: 10 } } },
+          legend: {
+            display: isDoughnut || datasets.length > 1,
+            position: isDoughnut ? 'right' : 'top',
+            labels: { color: c.onSurface, boxWidth: isDoughnut ? 12 : 10, padding: 8, font: { size: 10 } },
+          },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.label || ctx.dataset.label}: ${fmt(ctx.raw)}` } },
         },
-        scales: {
-          x: { ticks: { color: c.onSurface, font: { size: 9 }, maxRotation: 30 }, grid: { color: c.outline + '40' } },
-          y: { ticks: { color: c.onSurface, font: { size: 9 } }, grid: { color: c.outline + '40' } },
-        },
+        cutout: isDoughnut ? '60%' : undefined,
+        scales: isXY ? {
+          x: { ticks: { color: c.onSurface, font: { size: 9 }, maxRotation: 30 }, grid: { color: c.outline + '30' } },
+          y: { ticks: { color: c.onSurface, font: { size: 9 } }, grid: { color: c.outline + '30' } },
+        } : undefined,
       },
     });
   }, 0);
   return wrap;
+}
+
+function renderMetric(d) {
+  const col = COLOR_MAP_CSS[d.color] || 'var(--c-primary)';
+  const trendIcon = d.trend === 'up' ? 'trending_up' : d.trend === 'down' ? 'trending_down' : 'trending_flat';
+  const bgIcon = { error: 'error', warning: 'warning', success: 'check_circle', info: 'info', primary: 'analytics' }[d.color] || 'analytics';
+  const div = document.createElement('div');
+  div.className = 'rich-metric';
+  div.style.borderTopColor = col;
+  div.innerHTML = `
+    <div class="rich-metric-value" style="color:${col}">${esc(String(d.value || ''))}</div>
+    <div class="rich-metric-label">${esc(d.label || '')}</div>
+    ${d.note ? `<div class="rich-metric-note">${esc(d.note)}</div>` : ''}
+    ${d.trend ? `<span class="material-symbols-rounded rich-metric-trend" style="color:${col}">${trendIcon}</span>` : ''}
+    <span class="material-symbols-rounded rich-metric-bg-icon" style="color:${col}">${bgIcon}</span>`;
+  return div;
+}
+
+function renderStatGrid(d) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<div class="rich-pattern-header"><span class="material-symbols-rounded" style="font-size:0.85rem">table_chart</span>${esc(d.title || 'Statistics')}</div>`;
+  wrap.className = 'rich-pattern-table';
+  const grid = document.createElement('div');
+  grid.className = 'rich-stat-grid';
+  grid.style.padding = '0.375rem';
+  (d.rows || []).forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'rich-stat-row';
+    row.innerHTML = `<span class="rich-stat-key">${esc(r.key)}</span><span class="rich-stat-val">${esc(String(r.val))}</span>`;
+    grid.appendChild(row);
+  });
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+function renderRatio(d) {
+  const div = document.createElement('div');
+  div.className = 'rich-ratio';
+  div.innerHTML = `
+    <div class="rich-ratio-header">
+      <span class="rich-ratio-title">${esc(d.title || '')}</span>
+      <span class="rich-ratio-value">${esc(d.note || '')}</span>
+    </div>
+    <div class="rich-ratio-track">
+      <div class="rich-ratio-fill" style="width:${d.a?.pct || 0}%;background:${d.a?.color || 'var(--c-error)'}"></div>
+      <div class="rich-ratio-fill" style="width:${d.b?.pct || 0}%;background:${d.b?.color || 'var(--c-warning)'}"></div>
+    </div>
+    <div class="rich-ratio-labels">
+      <span>${esc(d.a?.label || '')} ${d.a?.pct || 0}%</span>
+      <span>${d.b?.pct || 0}% ${esc(d.b?.label || '')}</span>
+    </div>`;
+  return div;
+}
+
+function renderLogClusterGroup(clusters) {
+  const wrap = document.createElement('div');
+  wrap.style.display = 'flex';
+  wrap.style.flexDirection = 'column';
+  wrap.style.gap = '0.375rem';
+  (clusters || []).forEach(c => {
+    const div = document.createElement('div');
+    const level = c.level || 'ERROR';
+    const countClass = level === 'WARNING' ? 'warn' : level === 'INFO' ? 'info' : '';
+    div.className = `rich-log-cluster level-border-${level}`;
+    const header = document.createElement('div');
+    header.className = 'rich-cluster-header';
+    header.innerHTML = `
+      <span class="level-badge level-${level}">${level}</span>
+      <span class="rich-cluster-msg" title="${esc(c.msg)}">${esc(c.msg)}</span>
+      <span class="rich-cluster-count ${countClass}">×${c.ts.length}</span>`;
+    const body = document.createElement('div');
+    body.className = 'rich-cluster-body';
+    c.ts.slice(0, 8).forEach(ts => {
+      const ev = document.createElement('div');
+      ev.className = 'rich-cluster-event';
+      ev.innerHTML = `<span class="rich-cluster-ts">${esc(ts)}</span><span class="rich-cluster-text">${esc(c.msg.slice(0, 80))}</span>`;
+      body.appendChild(ev);
+    });
+    if (c.ts.length > 8) {
+      const more = document.createElement('div');
+      more.className = 'rich-cluster-event';
+      more.innerHTML = `<span class="rich-cluster-ts" style="color:var(--c-primary)">+${c.ts.length - 8} more occurrences</span>`;
+      body.appendChild(more);
+    }
+    header.addEventListener('click', () => body.classList.toggle('open'));
+    div.appendChild(header); div.appendChild(body);
+    wrap.appendChild(div);
+  });
+  return wrap;
+}
+
+function renderSummaryBanner(d) {
+  const div = document.createElement('div');
+  div.className = 'rich-summary-banner';
+  div.innerHTML = `<span class="material-symbols-rounded">summarize</span><span>${esc(d.text || '')}</span>`;
+  return div;
 }
 
 function renderQuiz(d) {
@@ -617,7 +885,6 @@ function renderQuiz(d) {
   (d.options || []).forEach((opt, i) => {
     const btn = document.createElement('button');
     btn.className = 'rich-quiz-opt';
-    btn.dataset.idx = i;
     btn.innerHTML = `<span class="opt-letter">${String.fromCharCode(65 + i)}</span><span>${esc(opt)}</span>`;
     btn.addEventListener('click', () => {
       if (div.dataset.answered) return;
@@ -640,21 +907,6 @@ function renderQuiz(d) {
   return div;
 }
 
-function renderMetric(d) {
-  const colorMap = { error: 'var(--c-error)', warning: 'var(--c-warning)', success: 'var(--c-success)', info: 'var(--c-info)', primary: 'var(--c-primary)' };
-  const col = colorMap[d.color] || 'var(--c-primary)';
-  const trendIcon = d.trend === 'up' ? 'trending_up' : d.trend === 'down' ? 'trending_down' : 'trending_flat';
-  const div = document.createElement('div');
-  div.className = 'rich-metric';
-  div.style.borderLeftColor = col;
-  div.innerHTML = `
-    <div class="rich-metric-value" style="color:${col}">${esc(String(d.value || ''))}</div>
-    <div class="rich-metric-label">${esc(d.label || '')}</div>
-    ${d.note ? `<div class="rich-metric-note">${esc(d.note)}</div>` : ''}
-    ${d.trend ? `<span class="material-symbols-rounded rich-metric-trend" style="color:${col}">${trendIcon}</span>` : ''}`;
-  return div;
-}
-
 function renderTimeline2(d) {
   const div = document.createElement('div');
   div.className = 'rich-timeline';
@@ -668,7 +920,7 @@ function renderTimeline2(d) {
   list.className = 'rich-timeline-list';
   (d.events || []).forEach(ev => {
     const item = document.createElement('div');
-    item.className = `rich-tl-item`;
+    item.className = 'rich-tl-item';
     item.innerHTML = `
       <div class="rich-tl-dot level-dot-${ev.level || 'INFO'}"></div>
       <div class="rich-tl-body">
@@ -851,15 +1103,10 @@ function ensureStreamBubble() {
 
 function endStreamBubble() {
   if (currentBubble && bubbleText) {
-    // Parse rich components
-    const segments = parseRichBlocks(bubbleText);
-    const hasRich = segments.some(s => s.kind !== 'md');
-    if (hasRich) {
-      currentBubble.innerHTML = '';
-      currentBubble.appendChild(renderRichSegments(segments));
-    } else {
-      currentBubble.innerHTML = marked.parse(bubbleText);
-    }
+    // Auto-detect widgets from plain text + parse explicit :::blocks:::
+    const segments = autoDetectWidgets(bubbleText);
+    currentBubble.innerHTML = '';
+    currentBubble.appendChild(renderRichSegments(segments));
   }
   currentBubble = null;
   bubbleText = '';

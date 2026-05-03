@@ -257,14 +257,16 @@ async def run_agent_stream(
         top_patterns  = state.summary.get("top_patterns", [])[:5]
         date_range    = state.summary.get("date_range", {})
         total_events  = sum(level_counts.values()) if level_counts else 0
+        loggers_json  = json.dumps([{"logger": l["logger"], "count": l["count"], "error_rate": round(l.get("error_rate", 0) * 100, 1)} for l in top_loggers])
+        patterns_json = json.dumps([{"pattern": p["pattern"][:80], "count": p["count"]} for p in top_patterns])
         system += f"""
 
 CURRENT LOG SUMMARY (use these exact numbers in your components — do not fabricate):
 - Total events: {total_events}
 - Level counts: {json.dumps(level_counts)}
-- Top loggers (name, count, error_rate): {json.dumps([{{"logger": l["logger"], "count": l["count"], "error_rate": round(l.get("error_rate",0)*100,1)}} for l in top_loggers])}
+- Top loggers (name, count, error_rate): {loggers_json}
 - Error bursts: {json.dumps(error_bursts)}
-- Top patterns: {json.dumps([{{"pattern": p["pattern"][:80], "count": p["count"]}} for p in top_patterns])}
+- Top patterns: {patterns_json}
 - Date range: {json.dumps(date_range)}
 """
 
