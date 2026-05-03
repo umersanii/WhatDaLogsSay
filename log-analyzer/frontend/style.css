@@ -932,3 +932,32 @@ body {
 /* ══════════════════ UTILITY ════════════════════════════════════════════════ */
 .hidden { display: none !important; }
 .material-symbols-rounded { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+/* ══════════════════ MODEL SELECTOR ═════════════════════════════════════════ */
+.model-selector-wrap {
+  display: flex; align-items: center; gap: 0.375rem;
+  background: var(--c-surface-var);
+  border: 1px solid var(--c-outline);
+  border-radius: var(--r);
+  padding: 0.25rem 0.5rem;
+  max-width: 260px;
+}
+.model-selector-icon {
+  font-size: 1rem; color: var(--c-primary); flex-shrink: 0;
+}
+.model-select {
+  border: none; background: transparent; color: var(--c-on-surface);
+  font-size: 0.78rem; font-family: inherit; cursor: pointer;
+  min-width: 0; flex: 1;
+  outline: none;
+}
+.model-select option { background: var(--c-surface); color: var(--c-on-surface); }
+.provider-badge {
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; padding: 2px 5px; border-radius: 4px;
+  background: var(--c-primary); color: #fff; flex-shrink: 0;
+  white-space: nowrap;
+}
+.provider-badge[data-provider="groq"]       { background: #f55036; }
+.provider-badge[data-provider="openrouter"] { background: #7c3aed; }
+.provider-badge[data-provider="gemini"]     { background: #1a73e8; }

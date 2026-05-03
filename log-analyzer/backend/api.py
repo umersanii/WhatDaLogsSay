@@ -12,7 +12,6 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-from groq import Groq, AsyncGroq
 from fastapi import FastAPI, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +20,10 @@ from backend.analyzer import build_summary
 from backend.agent import run_agent_stream, run_rag_stream
 from backend.parser import parse_log_file
 from backend.rag import RAGStore, build_chunks, build_index, load_index
+from backend.providers import (
+    make_async_client, make_sync_client, get_models_list,
+    DEFAULT_PROVIDER, DEFAULT_MODEL, MODELS, Provider,
+)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -50,28 +53,23 @@ class AppState:
 
 _state = AppState()
 
-# ── Groq client helpers ──────────────────────────────────────────────────────
+# ── Client helpers ────────────────────────────────────────────────────────────
 
-def _get_api_key() -> str:
-    api_key = os.environ.get("GROQ") or os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ or GROQ_API_KEY environment variable must be set.")
-    return api_key
-
-
-def _sync_client() -> Groq:
-    return Groq(api_key=_get_api_key())
-
-
-def _async_client() -> AsyncGroq:
-    return AsyncGroq(api_key=_get_api_key())
+def _resolve_model(model_id: str | None) -> tuple[str, "Provider", bool]:
+    """Return (model_id, provider, supports_tools) for the given model_id."""
+    mid = model_id or DEFAULT_MODEL
+    for m in MODELS:
+        if m.id == mid:
+            return m.id, m.provider, m.supports_tools
+    # Fallback: treat as groq model
+    return mid, DEFAULT_PROVIDER, True
 
 # ── Background processing ─────────────────────────────────────────────────────
 
 def _process_log(path: Path):
     """Parse → analyse → build RAG. Runs in a daemon thread."""
     state = _state
-    client = _sync_client()
+    client = make_sync_client(DEFAULT_PROVIDER)
     try:
         state.processing_step = "Parsing log file…"
         events, profile = parse_log_file(path)
@@ -253,19 +251,31 @@ async def clear_history():
     return {"status": "cleared"}
 
 
+@app.get("/api/models")
+async def list_models():
+    return {"models": get_models_list()}
+
+
 # ── WebSocket chat ────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
     await websocket.accept()
-    client = _async_client()
+    # Cache clients per provider to avoid re-creating on every message
+    _clients: dict = {}
+
+    def _get_client(provider: "Provider"):
+        if provider not in _clients:
+            _clients[provider] = make_async_client(provider)
+        return _clients[provider]
 
     try:
         while True:
             raw = await websocket.receive_text()
             payload = json.loads(raw)
-            question = payload.get("question", "").strip()
-            mode     = payload.get("mode", "agent")  # "agent" | "rag"
+            question  = payload.get("question", "").strip()
+            mode      = payload.get("mode", "agent")   # "agent" | "rag"
+            model_id  = payload.get("model") or None
 
             if not question:
                 await websocket.send_json({"type": "error", "content": "Empty question"})
@@ -275,21 +285,27 @@ async def ws_chat(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "content": "No log loaded. Upload a log file first."})
                 continue
 
+            model, provider, supports_tools = _resolve_model(model_id)
+            try:
+                client = _get_client(provider)
+            except RuntimeError as e:
+                await websocket.send_json({"type": "error", "content": str(e)})
+                continue
+
             if mode == "rag":
                 if not _state.rag_store:
                     await websocket.send_json({"type": "error", "content": "RAG index not ready yet."})
                     continue
-                async for chunk in run_rag_stream(question, _state, client):
+                async for chunk in run_rag_stream(question, _state, client, model=model):
                     await websocket.send_json(chunk)
             else:
-                # Agent mode — persist conversation
-                async for chunk in run_agent_stream(question, _state.conversation_history, _state, client):
+                async for chunk in run_agent_stream(
+                    question, _state.conversation_history, _state, client,
+                    model=model, supports_tools=supports_tools,
+                ):
                     await websocket.send_json(chunk)
                     if chunk["type"] == "done":
-                        # Append to history for context continuity
-                        _state.conversation_history.append({"role": "user",    "content": question})
-                        # (assistant content appended inside run_agent_stream via messages list,
-                        #  but we track user turns here for the history display)
+                        _state.conversation_history.append({"role": "user", "content": question})
 
     except WebSocketDisconnect:
         pass

@@ -7,8 +7,6 @@ import json
 from collections import defaultdict, Counter
 from datetime import datetime
 from typing import Optional
-from groq import Groq
-
 from backend.parser import LogEvent, FormatProfile
 
 
@@ -205,10 +203,10 @@ def _build_sample(events: list[LogEvent], n: int = 180) -> str:
 def characterize_log(
     events: list[LogEvent],
     stats: dict,
-    client: Groq,
+    client,
 ) -> dict:
     """
-    Ask Groq/Llama to characterize the log. Returns the parsed JSON dict.
+    Ask the AI to characterize the log. Returns the parsed JSON dict.
     Falls back to a safe default on any error.
     """
     sample = _build_sample(events)
@@ -260,7 +258,7 @@ def characterize_log(
 def build_summary(
     events: list[LogEvent],
     profile: FormatProfile,
-    client: Groq,
+    client,
 ) -> dict:
     """
     Full pipeline: compute stats then log characterization.

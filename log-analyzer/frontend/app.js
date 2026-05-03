@@ -25,6 +25,7 @@ let tlFilters     = { level: '', keyword: '', ts_from: '', ts_to: '' };
 let tlLimit       = 50;
 let currentBubble = null;   // DOM element being streamed into
 let bubbleText    = '';     // raw text accumulating in stream
+let selectedModel = null;   // null = server default
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
@@ -801,8 +802,11 @@ function handleWsMessage(msg) {
       removeThinking();
       ensureStreamBubble();
       bubbleText += msg.content;
-      // Live preview during streaming (plain markdown, rich render on done)
-      currentBubble.innerHTML = marked.parse(bubbleText);
+      // During streaming: hide partial :::component::: blocks so the user
+      // sees clean markdown; full rich render happens in endStreamBubble().
+      currentBubble.innerHTML = marked.parse(
+        bubbleText.replace(/:::[\s\S]*?(?::::)?/g, m => m.endsWith(':::') ? '' : '')
+      );
       scrollChat();
       break;
     case 'tool_call':
@@ -954,7 +958,67 @@ function sendMessage(text) {
     openWebSocket();
     return;
   }
-  chatWs.send(JSON.stringify({ question, mode: chatMode }));
+  const payload = { question, mode: chatMode };
+  if (selectedModel) payload.model = selectedModel;
+  chatWs.send(JSON.stringify(payload));
+}
+
+// ── Model selector ────────────────────────────────────────────────────────────
+const PROVIDER_LABELS = { groq: 'Groq', openrouter: 'OpenRouter', gemini: 'Gemini' };
+
+async function loadModels() {
+  try {
+    const data = await fetch('/api/models').then(r => r.json());
+    const models = data.models || [];
+    const sel = document.getElementById('model-select');
+    sel.innerHTML = '';
+
+    // Group by provider
+    const groups = {};
+    models.forEach(m => {
+      if (!groups[m.provider]) groups[m.provider] = [];
+      groups[m.provider].push(m);
+    });
+
+    Object.entries(groups).forEach(([provider, list]) => {
+      const og = document.createElement('optgroup');
+      og.label = PROVIDER_LABELS[provider] || provider;
+      list.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name + (!m.supports_tools ? ' (no tools)' : '');
+        og.appendChild(opt);
+      });
+      sel.appendChild(og);
+    });
+
+    // Restore saved selection
+    const saved = localStorage.getItem('logai_model');
+    const allIds = models.map(m => m.id);
+    if (saved && allIds.includes(saved)) {
+      sel.value = saved;
+    } else {
+      sel.value = allIds[0] || '';
+    }
+    selectedModel = sel.value || null;
+    updateProviderBadge(models.find(m => m.id === sel.value)?.provider);
+
+    sel.addEventListener('change', () => {
+      selectedModel = sel.value || null;
+      localStorage.setItem('logai_model', sel.value);
+      const info = models.find(m => m.id === sel.value);
+      updateProviderBadge(info?.provider);
+    });
+  } catch (e) {
+    console.warn('Failed to load models', e);
+  }
+}
+
+function updateProviderBadge(provider) {
+  const badge = document.getElementById('provider-badge');
+  if (!badge) return;
+  badge.textContent = PROVIDER_LABELS[provider] || provider || '';
+  badge.dataset.provider = provider || '';
 }
 
 function initChat() {
@@ -1046,6 +1110,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTimeline();
   initChat();
   initSettings();
+  loadModels();
 
   // Nav routing
   document.querySelectorAll('.nav-item[data-page]').forEach(btn =>

@@ -5,9 +5,7 @@ The agent/RAG system prompts come from the AI's own log characterization.
 """
 import json
 from datetime import datetime
-from typing import AsyncIterator, TYPE_CHECKING
-
-from groq import AsyncGroq
+from typing import AsyncIterator, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.api import AppState
@@ -237,7 +235,9 @@ async def run_agent_stream(
     question: str,
     history: list[dict],
     state: "AppState",
-    client: AsyncGroq,
+    client: Any,
+    model: str = "llama-3.3-70b-versatile",
+    supports_tools: bool = True,
 ) -> AsyncIterator[dict]:
     """
     Yields dicts: {type: "token"|"tool_call"|"tool_result"|"done"|"error"}
@@ -249,29 +249,60 @@ async def run_agent_stream(
         "Answer questions accurately using your tools. Format responses in markdown."
     )
 
-    # Augment system prompt with rich UI instructions
+    # Inject pre-computed summary stats so the model always has real numbers
+    if state.summary:
+        level_counts  = state.summary.get("level_counts", {})
+        top_loggers   = state.summary.get("top_loggers", [])[:8]
+        error_bursts  = state.summary.get("error_bursts", [])[:5]
+        top_patterns  = state.summary.get("top_patterns", [])[:5]
+        date_range    = state.summary.get("date_range", {})
+        total_events  = sum(level_counts.values()) if level_counts else 0
+        system += f"""
+
+CURRENT LOG SUMMARY (use these exact numbers in your components — do not fabricate):
+- Total events: {total_events}
+- Level counts: {json.dumps(level_counts)}
+- Top loggers (name, count, error_rate): {json.dumps([{{"logger": l["logger"], "count": l["count"], "error_rate": round(l.get("error_rate",0)*100,1)}} for l in top_loggers])}
+- Error bursts: {json.dumps(error_bursts)}
+- Top patterns: {json.dumps([{{"pattern": p["pattern"][:80], "count": p["count"]}} for p in top_patterns])}
+- Date range: {json.dumps(date_range)}
+"""
+
+    # Augment system prompt with rich UI instructions — MANDATORY
     system += """
 
-You can embed rich UI components in your response using special blocks. These will be rendered as interactive elements.
+CRITICAL RENDERING RULES — YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
 
-COMPONENT SYNTAX — use these EXACTLY as shown, on their own line:
+Your responses are rendered as interactive UI widgets, NOT plain text. Every response MUST use the component blocks below. Do NOT write raw numbers or statistics in plain prose — always use the appropriate component.
 
-1. Log reference (when citing a specific log event):
-:::log-ref{"ts":"2024-01-01 12:00:00","level":"ERROR","logger":"app.server","msg":"Connection refused to db host"}:::
+MANDATORY RULES:
+- Every key number/stat → :::metric::: block
+- Any distribution, ratio, or multi-value comparison → :::chart::: block
+- Quoting a specific log line → :::log-ref::: block
+- Any sequence of events → :::timeline::: block
+- Root cause / diagnostic questions → :::quiz::: block
 
-2. Inline chart (bar or line data):
-:::chart{"type":"bar","title":"Errors per Hour","labels":["10:00","11:00","12:00"],"datasets":[{"label":"Errors","data":[3,12,5],"color":"error"}]}:::
+COMPONENT SYNTAX (each block on its own line, valid JSON inside):
 
-3. Quiz / multiple choice question (for understanding checks or diagnosis):
-:::quiz{"question":"What is the most likely cause of these connection errors?","options":["Database overload","Network partition","Auth failure","Config mismatch"],"answer":1,"explanation":"The repeated timeout pattern with no auth errors points to network/database unavailability."}:::
+:::metric{"label":"Total Errors","value":"457","trend":"up","color":"error","note":"of 608 total events"}:::
 
-4. Key metric highlight:
-:::metric{"label":"Peak Error Rate","value":"47/min","trend":"up","color":"error","note":"at 14:32 UTC"}:::
+:::chart{"type":"bar","title":"Log Levels","labels":["ERROR","INFO","WARNING"],"datasets":[{"label":"Count","data":[457,121,14],"color":"error"}]}:::
 
-5. Timeline slice (show a sequence of events):
-:::timeline{"title":"Incident Timeline","events":[{"ts":"12:01:05","level":"WARNING","msg":"Latency spike detected"},{"ts":"12:01:12","level":"ERROR","msg":"DB connection timeout"},{"ts":"12:01:45","level":"CRITICAL","msg":"Service health check failed"}]}:::
+:::chart{"type":"bar","title":"Logger Activity","labels":["recognition","__unparsed__"],"datasets":[{"label":"Total","data":[592,16],"color":"primary"},{"label":"Error %","data":[77.2,0],"color":"error"}]}:::
 
-Use these components naturally when they add value. For data/statistics, prefer charts. When referencing specific log lines, use log-ref. For diagnosis questions, use quiz. Always wrap numbers/key findings in metric blocks.
+:::log-ref{"ts":"2024-01-01 12:00:01","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed"}:::
+
+:::timeline{"title":"Event Sequence","events":[{"ts":"12:01:05","level":"WARNING","msg":"First warning"},{"ts":"12:01:12","level":"ERROR","msg":"First error"}]}:::
+
+:::quiz{"question":"What is the root cause?","options":["A","B","C"],"answer":0,"explanation":"Because..."}:::
+
+RESPONSE STRUCTURE — follow this order EVERY time:
+1. One-sentence markdown summary.
+2. :::metric::: blocks for each key stat.
+3. :::chart::: for distributions / comparisons.
+4. :::log-ref::: when citing log lines.
+5. :::timeline::: for event sequences.
+6. One short markdown paragraph for interpretation (no raw numbers — reference the widgets above instead).
 """
 
     messages = history[-30:] + [{"role": "user", "content": question}]
@@ -281,13 +312,15 @@ Use these components naturally when they add value. For data/statistics, prefer 
         full_text = []
         accumulated_tool_calls: dict = {}
 
-        stream = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            max_tokens=4096,
-            messages=[{"role": "system", "content": system}] + messages,
-            tools=TOOLS,
-            stream=True,
-        )
+        create_kwargs: dict = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": [{"role": "system", "content": system}] + messages,
+            "stream": True,
+        }
+        if supports_tools:
+            create_kwargs["tools"] = TOOLS
+        stream = await client.chat.completions.create(**create_kwargs)
         async for chunk in stream:
             if not chunk.choices:
                 continue
@@ -349,7 +382,8 @@ Use these components naturally when they add value. For data/statistics, prefer 
 async def run_rag_stream(
     question: str,
     state: "AppState",
-    client: AsyncGroq,
+    client: Any,
+    model: str = "llama-3.3-70b-versatile",
     top_k: int = 8,
 ) -> AsyncIterator[dict]:
     """
@@ -361,6 +395,19 @@ async def run_rag_stream(
         "You are a log analyst. Answer questions using ONLY the provided log excerpts. "
         "Be specific with timestamps and values."
     )
+    system += """
+
+CRITICAL RENDERING RULES — YOU MUST FOLLOW THESE WITHOUT EXCEPTION:
+
+Your responses are rendered as interactive UI widgets. Use these component blocks — plain prose with raw numbers is FORBIDDEN.
+
+:::metric{"label":"Label","value":"42","trend":"up","color":"error","note":"context note"}:::
+:::chart{"type":"bar","title":"Title","labels":["A","B"],"datasets":[{"label":"Series","data":[10,20],"color":"primary"}]}:::
+:::log-ref{"ts":"2024-01-01 12:00:00","level":"ERROR","logger":"app","msg":"message text"}:::
+:::timeline{"title":"Title","events":[{"ts":"12:01","level":"ERROR","msg":"event"}]}:::
+
+Rules: metrics for every number, charts for distributions/comparisons, log-ref when quoting log lines, timeline for event sequences. End with a brief markdown interpretation paragraph — no raw numbers in prose.
+"""
 
     results = state.rag_store.query(question, top_k=top_k)
     context = "\n\n---\n\n".join(
@@ -371,7 +418,7 @@ async def run_rag_stream(
     yield {"type": "status", "content": f"Retrieved {len(results)} relevant log chunks…"}
 
     stream = await client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model,
         max_tokens=3000,
         messages=[
             {"role": "system", "content": system},
