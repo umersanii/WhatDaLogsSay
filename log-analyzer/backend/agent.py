@@ -273,35 +273,34 @@ CURRENT LOG SUMMARY (use these exact numbers in your components — do not fabri
     # Augment system prompt with rich UI instructions
     system += """
 
-RENDERING RULES:
+OUTPUT FORMAT:
 
-Your responses are rendered as interactive UI widgets. Use these components ONLY when they add clarity — do NOT inject them mechanically into every response.
+This UI renders special widget blocks. You MUST output them literally — they are NOT markdown, they are NOT code blocks. They appear directly in your response text, one per line:
 
-When to use each component:
-- :::metric::: — only for a specific stat the user asked about (not a dump of all stats)
-- :::chart::: — only when comparing multiple values (e.g. error distribution across loggers)
-- :::log-ref::: — only when quoting an actual log line from the data
-- :::timeline::: — only for ordered event sequences
-- :::quiz::: — only for root-cause diagnostic questions
+:::metric{"label":"Total Errors","value":"457","trend":"up","color":"error","note":"of 70206 total events"}:::
+:::chart{"type":"bar","title":"Errors per Hour","labels":["18:00","19:00","20:00"],"datasets":[{"label":"Errors","data":[12,475,88],"color":"error"}]}:::
+:::log-ref{"ts":"2026-04-27 18:59:50,449","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed: NoneType object is not callable"}:::
+:::timeline{"title":"Error Sequence","events":[{"ts":"18:59:50","level":"ERROR","msg":"First recognition failure"},{"ts":"19:00:45","level":"ERROR","msg":"Burst: 475 errors"},{"ts":"19:07:55","level":"WARNING","msg":"YOLO fallback triggered"}]}:::
+:::quiz{"question":"What triggered the error burst?","options":["GPU memory exhausted","Model not callable after reload","Network disconnect"],"answer":1,"explanation":"NoneType errors suggest the model object was None when called."}:::
 
-COMPONENT SYNTAX (each block on its own line, valid JSON inside):
-
-:::metric{"label":"Total Errors","value":"457","trend":"up","color":"error","note":"of 608 total events"}:::
-
-:::chart{"type":"bar","title":"Log Levels","labels":["ERROR","INFO","WARNING"],"datasets":[{"label":"Count","data":[457,121,14],"color":"error"}]}:::
-
-:::chart{"type":"bar","title":"Logger Activity","labels":["recognition","__unparsed__"],"datasets":[{"label":"Total","data":[592,16],"color":"primary"},{"label":"Error %","data":[77.2,0],"color":"error"}]}:::
-
-:::log-ref{"ts":"2024-01-01 12:00:01","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed"}:::
-
-:::timeline{"title":"Event Sequence","events":[{"ts":"12:01:05","level":"WARNING","msg":"First warning"},{"ts":"12:01:12","level":"ERROR","msg":"First error"}]}:::
-
-:::quiz{"question":"What is the root cause?","options":["A","B","C"],"answer":0,"explanation":"Because..."}:::
-
-BE DIRECT AND CONCISE. Answer only what was asked. Do not repeat general stats on every response. If the user asks for the first 10 log events, show them with :::log-ref::: blocks — nothing else. If asked for top errors, list them. If asked a yes/no question, answer it directly in one sentence.
+RULES (follow exactly):
+1. Output :::blocks::: literally in your text — the renderer turns them into cards automatically.
+2. Use :::log-ref::: for every log line you quote — never quote in plain prose.
+3. Use :::timeline::: for sequences — MAX 8 events, collapse repeated errors into one entry like {"ts":"19:00:45–19:02:00","level":"ERROR","msg":"~475× Batched recognition failed (burst)"}.
+4. Use :::metric::: for any number/stat, :::chart::: for any 2+ value comparison.
+5. Keep responses under 300 words. Be direct — answer only what was asked.
+6. Never repeat content from a previous response in this conversation.
+7. All values must be real data from the log — never use placeholder text.
 """
 
-    messages = history[-30:] + [{"role": "user", "content": question}]
+    # Few-shot example so the model learns output format by imitation
+    few_shot = [
+        {"role": "user", "content": "How many errors are there?"},
+        {"role": "assistant", "content": ':::metric{"label":"Total Errors","value":"457","trend":"up","color":"error","note":"of 70206 total events"}:::\n\n457 errors recorded, mostly from the `recognition` logger during the 19:00 burst.'},
+        {"role": "user", "content": "Show me the first error."},
+        {"role": "assistant", "content": ':::log-ref{"ts":"2026-04-27 18:59:50,449","level":"ERROR","logger":"recognition","msg":"Batched face recognition failed: NoneType object is not callable"}:::\n\nFirst error at 18:59:50 — the recognition model was None when called.'},
+    ]
+    messages = few_shot + history[-20:] + [{"role": "user", "content": question}]
     max_iters = 10
 
     for _ in range(max_iters):
@@ -393,13 +392,18 @@ async def run_rag_stream(
     )
     system += """
 
-RENDERING RULES: Use UI components only when they help — not on every response.
-- :::metric::: for specific stats the user asked about
-- :::chart::: for multi-value comparisons
-- :::log-ref::: when quoting an actual log line
-- :::timeline::: for ordered event sequences
+OUTPUT FORMAT — CRITICAL: Embed widget blocks LITERALLY in your output. The renderer parses them into UI cards.
 
-BE CONCISE. Answer only what was asked. Do not dump all stats on every response.
+:::metric{"label":"Error Rate","value":"75%","trend":"up","color":"error","note":"457 of 608 events"}:::
+:::log-ref{"ts":"2026-04-16 16:42:12","level":"ERROR","logger":"recognition","msg":"Failed to initialize FaceNet"}:::
+:::timeline{"title":"Key Events","events":[{"ts":"16:42:12","level":"ERROR","msg":"FaceNet init failed"},{"ts":"16:44:48","level":"ERROR","msg":"Camera frame drop"}]}:::
+:::chart{"type":"bar","title":"Level Breakdown","labels":["ERROR","INFO","WARNING"],"datasets":[{"label":"Count","data":[457,121,30],"color":"error"}]}:::
+
+RULES:
+- Emit :::blocks::: LITERALLY — never describe them in prose.
+- MAX 8 events in a timeline — summarise bursts as one entry.
+- Keep response under 300 words. Answer only what was asked.
+- Real values only — never use placeholder text.
 """
 
     results = state.rag_store.query(question, top_k=top_k)

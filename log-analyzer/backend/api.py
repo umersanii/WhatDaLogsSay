@@ -374,13 +374,18 @@ async def ws_chat(websocket: WebSocket):
                 async for chunk in run_rag_stream(question, _state, client, model=model):
                     await websocket.send_json(chunk)
             else:
+                assistant_tokens = []
                 async for chunk in run_agent_stream(
                     question, _state.conversation_history, _state, client,
                     model=model, supports_tools=supports_tools,
                 ):
                     await websocket.send_json(chunk)
+                    if chunk["type"] == "token":
+                        assistant_tokens.append(chunk["content"])
                     if chunk["type"] == "done":
                         _state.conversation_history.append({"role": "user", "content": question})
+                        if assistant_tokens:
+                            _state.conversation_history.append({"role": "assistant", "content": "".join(assistant_tokens)})
 
     except WebSocketDisconnect:
         pass
