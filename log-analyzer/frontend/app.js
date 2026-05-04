@@ -1517,6 +1517,383 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+// ── Report page ───────────────────────────────────────────────────────────────
+
+let reportCurrentId  = null;
+let reportEventSource = null;
+let reportSections   = {};
+let reportGenRunning = false;
+
+const RPT_SECTIONS = [
+  { id: 'cover',                  title: 'Cover',                    icon: 'description',    isStatic: true },
+  { id: 'table_of_contents',      title: 'Table of Contents',        icon: 'toc',            isStatic: true },
+  { id: 'abstract',               title: 'Abstract',                 icon: 'article' },
+  { id: 'executive_summary',      title: 'Executive Summary',        icon: 'assignment' },
+  { id: 'system_overview',        title: 'System Overview',          icon: 'hub' },
+  { id: 'statistical_overview',   title: 'Statistical Overview',     icon: 'bar_chart',      isStatic: true },
+  { id: 'error_analysis',         title: 'Error Analysis',           icon: 'error',          isError: true },
+  { id: 'error_bursts',           title: 'Error Burst Analysis',     icon: 'bolt',           isError: true },
+  { id: 'performance_throughput', title: 'Performance & Throughput', icon: 'speed' },
+  { id: 'component_health',       title: 'Component Health',         icon: 'developer_board' },
+  { id: 'pattern_analysis',       title: 'Pattern Analysis',         icon: 'pattern' },
+  { id: 'entity_analysis',        title: 'Entity Analysis',          icon: 'fingerprint' },
+  { id: 'pain_points',            title: 'Pain Points',              icon: 'location_on',    isPain: true },
+  { id: 'recommendations',        title: 'Recommendations',          icon: 'tips_and_updates' },
+  { id: 'appendix',               title: 'Appendix',                 icon: 'table_view',     isStatic: true },
+];
+
+function initReport() {
+  document.getElementById('report-generate-btn').addEventListener('click', startReportGeneration);
+  document.getElementById('report-download-btn').addEventListener('click', downloadReport);
+  buildSectionTracker();
+}
+
+/* Build the left-sidebar section checklist */
+function buildSectionTracker() {
+  const tracker = document.getElementById('report-section-tracker');
+  if (!tracker) return;
+  tracker.innerHTML = RPT_SECTIONS.map(s => `
+    <div class="rtrack-item" id="rtrack-${s.id}">
+      <span class="rtrack-icon material-symbols-rounded">${s.icon}</span>
+      <span class="rtrack-label">${s.title}</span>
+      <span class="rtrack-status" id="rtst-${s.id}">
+        <span class="material-symbols-rounded rtrack-pending">radio_button_unchecked</span>
+      </span>
+    </div>`).join('');
+}
+
+function startReportGeneration() {
+  if (reportGenRunning) return;
+  reportGenRunning = true;
+  reportSections   = {};
+  reportCurrentId  = null;
+
+  // Show document, hide landing
+  document.getElementById('report-landing').style.display = 'none';
+  document.getElementById('report-document').style.display = '';
+
+  // Show overall progress in sidebar
+  document.getElementById('report-overall-progress').style.display = '';
+
+  // Disable generate, reset tracker
+  const genBtn = document.getElementById('report-generate-btn');
+  genBtn.disabled = true;
+  genBtn.innerHTML = '<span class="material-symbols-rounded spin">autorenew</span><span>Generating…</span>';
+  document.getElementById('report-download-btn').disabled = true;
+
+  // Reset all tracker items
+  RPT_SECTIONS.forEach(s => setTrackerStatus(s.id, 'pending'));
+
+  // Build document skeleton
+  buildDocumentSkeleton();
+
+  // Open SSE (GET endpoint)
+  reportEventSource = new EventSource('/api/report/generate');
+  reportEventSource.onmessage = onReportSSE;
+  reportEventSource.onerror   = () => onReportError();
+}
+
+function onReportSSE(event) {
+  let msg;
+  try { msg = JSON.parse(event.data); } catch { return; }
+
+  if (msg.type === 'start') {
+    setOverallProgress(3, 'Generating report…');
+    setCurrentSectionLabel('Starting…');
+  }
+
+  if (msg.type === 'section_start') {
+    const sec  = RPT_SECTIONS.find(s => s.id === msg.section);
+    const pct  = Math.round(((msg.index || 0) / RPT_SECTIONS.length) * 88) + 4;
+    setOverallProgress(pct, sec ? sec.title : msg.section);
+    setCurrentSectionLabel(`${sec ? sec.icon + '  ' : ''}${sec ? sec.title : msg.section}`);
+    setTrackerStatus(msg.section, 'active');
+    // Scroll tracker item into view
+    document.getElementById(`rtrack-${msg.section}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  if (msg.type === 'section_content') {
+    reportSections[msg.section] = (reportSections[msg.section] || '') + msg.content;
+    renderSection(msg.section, reportSections[msg.section]);
+  }
+
+  if (msg.type === 'section_done') {
+    setTrackerStatus(msg.section, 'done');
+    // Scroll the rendered section into view (skip cover/toc)
+    if (!['cover','table_of_contents'].includes(msg.section)) {
+      document.getElementById(`rsec-${msg.section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  if (msg.type === 'complete') {
+    setOverallProgress(95, 'Saving report…');
+    setCurrentSectionLabel('Saving…');
+  }
+
+  if (msg.type === 'saved') {
+    reportCurrentId = msg.report_id;
+    setOverallProgress(100, 'Report complete!');
+    setCurrentSectionLabel('Done ✓');
+    setTimeout(() => finishReportGeneration(true), 1000);
+  }
+}
+
+function onReportError() {
+  console.error('Report SSE connection error');
+  setOverallProgress(0, 'Connection error — is the server running?');
+  setCurrentSectionLabel('Error');
+  finishReportGeneration(false);
+}
+
+function buildDocumentSkeleton() {
+  // Reset TOC
+  document.getElementById('report-toc-list').innerHTML =
+    RPT_SECTIONS.filter(s => !['cover','table_of_contents'].includes(s.id))
+      .map((s, i) => `<li><a href="#rsec-${s.id}">${i+1}. ${s.title}</a></li>`).join('');
+
+  // Build LLM text section placeholders
+  const llmContainer = document.getElementById('report-llm-sections');
+  llmContainer.innerHTML = '';
+  let num = 1;
+  RPT_SECTIONS.forEach(s => {
+    if (['cover','table_of_contents','statistical_overview','appendix'].includes(s.id)) return;
+    const el = document.createElement('div');
+    el.className = 'report-section' + (s.isPain ? ' report-pain-section' : '');
+    el.id = `rsec-${s.id}`;
+    el.innerHTML = `
+      <div class="report-sec-header">
+        <span class="material-symbols-rounded">${s.icon}</span>
+        <h2 class="report-sec-title">${num}. ${s.title}</h2>
+        <span class="report-sec-badge pending" id="rss-${s.id}">Pending</span>
+      </div>
+      <div class="report-sec-body" id="rsb-${s.id}">
+        <div class="report-skeleton">
+          ${['90%','70%','82%','55%','75%'].map(w => `<div class="skeleton-line" style="width:${w}"></div>`).join('')}
+        </div>
+      </div>`;
+    llmContainer.appendChild(el);
+    num++;
+  });
+}
+
+/* Render a section's content into the document */
+function renderSection(secId, content) {
+  // Update badge
+  const badge = document.getElementById(`rss-${secId}`);
+  if (badge) { badge.className = 'report-sec-badge active'; badge.textContent = 'Writing…'; }
+
+  if (secId === 'cover') {
+    try {
+      const d = JSON.parse(content);
+      document.getElementById('rc-filename').textContent = d.filename || '—';
+      document.getElementById('rc-system').textContent   = d.system_description || d.log_type || '—';
+      document.getElementById('rc-meta').textContent     = `Generated ${d.generated_at || ''}  ·  Format: ${d.format || 'Unknown'}`;
+      document.getElementById('rc-stats').innerHTML = `
+        <div class="rcover-stat"><div class="rcover-val">${fmt(d.total_events||0)}</div><div class="rcover-lbl">Total Events</div></div>
+        <div class="rcover-stat"><div class="rcover-val rcover-err">${fmt(d.error_count||0)}</div><div class="rcover-lbl">Errors</div></div>
+        <div class="rcover-stat"><div class="rcover-val rcover-err">${(d.error_rate_pct||0).toFixed(1)}%</div><div class="rcover-lbl">Error Rate</div></div>
+        <div class="rcover-stat rcover-wide">
+          <div class="rcover-val" style="font-size:0.95rem">${d.time_range_first||''}  →  ${d.time_range_last||''}</div>
+          <div class="rcover-lbl">Time Range · ${(d.span_hours||0).toFixed(1)} hours</div>
+        </div>`;
+    } catch {}
+    return;
+  }
+
+  if (secId === 'table_of_contents') return;
+
+  if (secId === 'statistical_overview') {
+    try { renderReportCharts(JSON.parse(content)); } catch {}
+    const b2 = document.getElementById('rss-statistical_overview');
+    if (b2) b2.style.display = '';
+    return;
+  }
+
+  if (secId === 'appendix') {
+    try { renderReportAppendix(JSON.parse(content)); } catch {}
+    const b2 = document.getElementById('rss-appendix');
+    if (b2) b2.style.display = '';
+    return;
+  }
+
+  // LLM markdown sections
+  const body = document.getElementById(`rsb-${secId}`);
+  if (!body) return;
+  body.innerHTML = `<div class="report-md-content">${marked.parse(content)}</div>`;
+}
+
+/* Charts for statistical overview */
+function renderReportCharts(data) {
+  const lc  = data.level_counts || {};
+  const LEVEL_COLORS = { DEBUG:'#6B7280', INFO:'#3B82F6', WARNING:'#F59E0B', ERROR:'#EF4444', CRITICAL:'#7C3AED', RAW:'#9CA3AF' };
+  const isDark  = document.documentElement.dataset.theme !== 'light';
+  const tickClr = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+  const gridClr = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+  const scaleOpts = { ticks: { color: tickClr }, grid: { color: gridClr } };
+  const legendOpts = { labels: { color: tickClr, boxWidth: 12, font: { size: 11 } } };
+  const mk = id => document.getElementById(id)?.getContext('2d');
+
+  // Destroy existing charts to avoid duplicates on regenerate
+  ['rpt-chart-levels','rpt-chart-loggers','rpt-chart-hours','rpt-chart-errors-hour'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && Chart.getChart(el)) Chart.getChart(el).destroy();
+  });
+
+  // Level doughnut
+  const lvlCtx = mk('rpt-chart-levels');
+  if (lvlCtx) new Chart(lvlCtx, {
+    type: 'doughnut',
+    data: { labels: Object.keys(lc), datasets: [{ data: Object.values(lc), backgroundColor: Object.keys(lc).map(l => LEVEL_COLORS[l]||'#9CA3AF'), borderWidth: 0 }] },
+    options: { cutout: '62%', plugins: { legend: legendOpts } }
+  });
+
+  // Loggers bar
+  const tl  = (data.top_loggers || []).slice(0, 10);
+  const logCtx = mk('rpt-chart-loggers');
+  if (logCtx) new Chart(logCtx, {
+    type: 'bar',
+    data: {
+      labels: tl.map(l => l.logger),
+      datasets: [
+        { label: 'Total', data: tl.map(l => l.count), backgroundColor: 'rgba(129,140,248,0.8)' },
+        { label: 'Errors', data: tl.map(l => Math.round((l.error_rate||0)*l.count)), backgroundColor: 'rgba(248,113,113,0.8)' },
+      ]
+    },
+    options: { plugins: { legend: legendOpts }, scales: { x: { ...scaleOpts, ticks: { ...scaleOpts.ticks, maxRotation: 45 } }, y: scaleOpts } }
+  });
+
+  // Events/hour
+  const eph  = data.events_per_hour || {};
+  const erph = data.errors_per_hour || {};
+  const hrKeys = [...new Set([...Object.keys(eph),...Object.keys(erph)])].sort();
+  const hrCtx = mk('rpt-chart-hours');
+  if (hrCtx) new Chart(hrCtx, {
+    type: 'bar',
+    data: { labels: hrKeys, datasets: [{ label: 'Events/hr', data: hrKeys.map(h => eph[h]||0), backgroundColor: 'rgba(129,140,248,0.7)' }] },
+    options: { plugins: { legend: legendOpts }, scales: { x: { ...scaleOpts, ticks: { ...scaleOpts.ticks, maxRotation: 60 } }, y: scaleOpts } }
+  });
+
+  // Errors/hour line
+  const ehCtx = mk('rpt-chart-errors-hour');
+  if (ehCtx) new Chart(ehCtx, {
+    type: 'line',
+    data: { labels: hrKeys, datasets: [{ label: 'Errors/hr', data: hrKeys.map(h => erph[h]||0), borderColor:'#f87171', backgroundColor:'rgba(248,113,113,0.15)', fill:true, tension:0.3 }] },
+    options: { plugins: { legend: legendOpts }, scales: { x: { ...scaleOpts, ticks: { ...scaleOpts.ticks, maxRotation: 60 } }, y: scaleOpts } }
+  });
+
+  // Level table
+  const total = Object.values(lc).reduce((a,b)=>a+b,0)||1;
+  const tbody = document.getElementById('rpt-level-tbody');
+  if (tbody) tbody.innerHTML = Object.entries(lc).map(([l,c]) =>
+    `<tr><td><span class="level-badge level-${l.toLowerCase()}">${l}</span></td><td>${fmt(c)}</td><td>${(c/total*100).toFixed(2)}%</td></tr>`).join('');
+}
+
+/* Appendix tables */
+function renderReportAppendix(data) {
+  const el = document.getElementById('report-appendix-content');
+  if (!el) return;
+  const loggers  = (data.all_loggers   || []).slice(0, 30);
+  const samples  = (data.error_samples || []).slice(0, 50);
+  const bursts   = data.error_bursts   || [];
+  const patterns = (data.top_patterns  || []).slice(0, 30);
+
+  el.innerHTML = `
+    <h3 class="report-appendix-h">A. Logger Health Summary</h3>
+    <div class="report-table-wrap">
+    <table class="report-stat-table">
+      <thead><tr><th>Logger</th><th>Events</th><th>Errors</th><th>Error Rate</th><th>Health</th></tr></thead>
+      <tbody>${loggers.map(l => {
+        const errs = Math.round((l.error_rate||0)*l.count);
+        const rate = ((l.error_rate||0)*100).toFixed(1);
+        const icon = +rate>20 ? '🔴 Critical' : +rate>5 ? '⚠️ Warning' : '✅ Healthy';
+        return `<tr><td><code class="rcode">${esc(l.logger)}</code></td><td>${fmt(l.count)}</td><td>${fmt(errs)}</td><td>${rate}%</td><td class="rhealth">${icon}</td></tr>`;
+      }).join('')}</tbody>
+    </table></div>
+
+    <h3 class="report-appendix-h">B. Error Samples</h3>
+    <div class="report-table-wrap">
+    <table class="report-stat-table">
+      <thead><tr><th>Timestamp</th><th>Logger</th><th>Message</th></tr></thead>
+      <tbody>${samples.map(s =>
+        `<tr><td class="report-ts">${esc(s.ts||'')}</td><td><code class="rcode">${esc(s.logger||'')}</code></td><td class="report-msg">${esc((s.msg||'').slice(0,200))}</td></tr>`
+      ).join('')}</tbody>
+    </table></div>
+
+    <h3 class="report-appendix-h">C. Error Bursts</h3>
+    ${bursts.length
+      ? `<div class="report-table-wrap"><table class="report-stat-table">
+           <thead><tr><th>Hour</th><th>Error Count</th></tr></thead>
+           <tbody>${bursts.map(b=>`<tr><td class="report-ts">${esc(b.hour||'')}</td><td>${fmt(b.count||0)}</td></tr>`).join('')}</tbody>
+         </table></div>`
+      : '<p class="report-muted">No error bursts detected.</p>'}
+
+    <h3 class="report-appendix-h">D. Top Message Patterns</h3>
+    <div class="report-table-wrap">
+    <table class="report-stat-table">
+      <thead><tr><th>Pattern</th><th>Count</th></tr></thead>
+      <tbody>${patterns.map(p=>
+        `<tr><td class="report-pattern">${esc((p.pattern||'').slice(0,120))}</td><td>${fmt(p.count||0)}</td></tr>`
+      ).join('')}</tbody>
+    </table></div>`;
+}
+
+/* Sidebar helpers */
+function setTrackerStatus(secId, status) {
+  const el = document.getElementById(`rtst-${secId}`);
+  const item = document.getElementById(`rtrack-${secId}`);
+  if (!el) return;
+  item?.classList.remove('rtrack-active','rtrack-done');
+  if (status === 'pending') {
+    el.innerHTML = '<span class="material-symbols-rounded rtrack-pending">radio_button_unchecked</span>';
+  } else if (status === 'active') {
+    el.innerHTML = '<span class="material-symbols-rounded rtrack-active spin">autorenew</span>';
+    item?.classList.add('rtrack-active');
+  } else if (status === 'done') {
+    el.innerHTML = '<span class="material-symbols-rounded rtrack-done">check_circle</span>';
+    item?.classList.add('rtrack-done');
+  }
+}
+
+function setOverallProgress(pct, label) {
+  const fill = document.getElementById('report-progress-fill');
+  const lbl  = document.getElementById('report-overall-label');
+  const pctEl = document.getElementById('report-overall-pct');
+  if (fill)  fill.style.width  = pct + '%';
+  if (lbl)   lbl.textContent   = label;
+  if (pctEl) pctEl.textContent = pct + '%';
+}
+
+function setCurrentSectionLabel(text) {
+  const el = document.getElementById('report-current-section');
+  if (el) el.textContent = text;
+}
+
+function finishReportGeneration(success) {
+  reportGenRunning = false;
+  if (reportEventSource) { reportEventSource.close(); reportEventSource = null; }
+
+  const genBtn = document.getElementById('report-generate-btn');
+  genBtn.disabled = false;
+  genBtn.innerHTML = '<span class="material-symbols-rounded">refresh</span><span>Regenerate</span>';
+
+  if (success && reportCurrentId) {
+    document.getElementById('report-download-btn').disabled = false;
+  }
+  // Mark all pending sections as done (in case server closed connection)
+  RPT_SECTIONS.forEach(s => {
+    const st = document.getElementById(`rtst-${s.id}`);
+    if (st && st.querySelector('.rtrack-active')) setTrackerStatus(s.id, 'done');
+  });
+}
+
+function downloadReport() {
+  if (!reportCurrentId) return;
+  const a = document.createElement('a');
+  a.href = `/api/report/${reportCurrentId}/html`;
+  a.download = `log-report-${reportCurrentId}.html`;
+  a.click();
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
@@ -1525,6 +1902,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initChat();
   initSessions();
   initSettings();
+  initReport();
   loadModels();
 
   // Nav routing

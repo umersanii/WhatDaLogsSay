@@ -76,6 +76,10 @@
         <span class="material-symbols-rounded">smart_toy</span>
         <span class="nav-label">AI Chat</span>
       </button>
+      <button class="nav-item" data-page="report">
+        <span class="material-symbols-rounded">summarize</span>
+        <span class="nav-label">Report</span>
+      </button>
     </div>
 
     <div class="nav-bottom">
@@ -381,6 +385,190 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ── Report page ── -->
+    <section class="page" id="page-report">
+
+      <!-- Two-column layout: sidebar progress + main content -->
+      <div class="report-layout">
+
+        <!-- ── Left sidebar: generation controls + section tracker ── -->
+        <aside class="report-sidebar">
+          <div class="report-sidebar-header">
+            <span class="material-symbols-rounded" style="color:var(--c-primary)">summarize</span>
+            <span class="report-sidebar-title">Analysis Report</span>
+          </div>
+
+          <!-- Generate / Download buttons -->
+          <div class="report-actions">
+            <button class="btn-filled report-gen-btn" id="report-generate-btn">
+              <span class="material-symbols-rounded">auto_awesome</span>
+              <span>Generate Report</span>
+            </button>
+            <button class="btn-tonal report-dl-btn" id="report-download-btn" disabled>
+              <span class="material-symbols-rounded">download</span>
+              <span>Download HTML</span>
+            </button>
+          </div>
+
+          <!-- Overall progress -->
+          <div class="report-overall-progress" id="report-overall-progress" style="display:none">
+            <div class="report-overall-top">
+              <span class="report-overall-label" id="report-overall-label">Starting…</span>
+              <span class="report-overall-pct" id="report-overall-pct">0%</span>
+            </div>
+            <div class="report-progress-track">
+              <div class="report-progress-fill" id="report-progress-fill"></div>
+            </div>
+            <div class="report-current-section" id="report-current-section"></div>
+          </div>
+
+          <!-- Section tracker list -->
+          <div class="report-section-tracker" id="report-section-tracker">
+            <!-- Filled by JS -->
+          </div>
+        </aside>
+
+        <!-- ── Main area: report document ── -->
+        <div class="report-main" id="report-main">
+
+          <!-- Landing state -->
+          <div class="report-landing" id="report-landing">
+            <div class="report-landing-icon">
+              <span class="material-symbols-rounded">description</span>
+            </div>
+            <h2 class="report-landing-title">Full Log Analysis Report</h2>
+            <p class="report-landing-sub">One click generates a comprehensive, long-form report with 11 AI-powered sections — each analyzed separately for maximum depth.</p>
+
+            <div class="report-preview-grid">
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">article</span>
+                <div class="rpi-label">Abstract</div>
+                <div class="rpi-desc">High-level overview of what the log reveals</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">assignment</span>
+                <div class="rpi-label">Executive Summary</div>
+                <div class="rpi-desc">Key findings, health verdict, top 3 pain points</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">hub</span>
+                <div class="rpi-label">System Overview</div>
+                <div class="rpi-desc">Inferred architecture, components, topology</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">bar_chart</span>
+                <div class="rpi-label">Statistical Overview</div>
+                <div class="rpi-desc">All charts: levels, loggers, events/hour, errors/hour</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon" style="color:var(--c-error)">error</span>
+                <div class="rpi-label">Error Analysis</div>
+                <div class="rpi-desc">Root causes, categories, most problematic loggers</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon" style="color:var(--c-error)">bolt</span>
+                <div class="rpi-label">Error Burst Analysis</div>
+                <div class="rpi-desc">Burst timelines, triggers, recovery patterns</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">speed</span>
+                <div class="rpi-label">Performance & Throughput</div>
+                <div class="rpi-desc">Throughput trends, bottlenecks, availability</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">developer_board</span>
+                <div class="rpi-label">Component Health</div>
+                <div class="rpi-desc">Per-logger health: ✅ Healthy / ⚠️ Warning / 🔴 Critical</div>
+              </div>
+              <div class="report-preview-item rpi-highlight">
+                <span class="material-symbols-rounded rpi-icon" style="color:var(--c-error)">location_on</span>
+                <div class="rpi-label">Pain Points & Where to Look</div>
+                <div class="rpi-desc">Exact timestamps, logger names, search keywords for every issue</div>
+              </div>
+              <div class="report-preview-item">
+                <span class="material-symbols-rounded rpi-icon">tips_and_updates</span>
+                <div class="rpi-label">Recommendations</div>
+                <div class="rpi-desc">Prioritized action list with evidence citations</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Report document -->
+          <div class="report-document" id="report-document" style="display:none">
+
+            <!-- Cover -->
+            <div class="report-cover" id="rsec-cover">
+              <div class="report-cover-inner">
+                <p class="report-cover-tag">Log Analysis Report</p>
+                <h1 class="report-cover-title" id="rc-filename">—</h1>
+                <p class="report-cover-system" id="rc-system">—</p>
+                <div class="report-cover-stats" id="rc-stats"></div>
+                <p class="report-cover-meta" id="rc-meta">—</p>
+              </div>
+            </div>
+
+            <!-- Table of Contents -->
+            <div class="report-section" id="rsec-toc">
+              <div class="report-sec-header">
+                <span class="material-symbols-rounded">toc</span>
+                <h2 class="report-sec-title">Table of Contents</h2>
+              </div>
+              <ol class="report-toc-list" id="report-toc-list"></ol>
+            </div>
+
+            <!-- LLM text sections inserted here by JS -->
+            <div id="report-llm-sections"></div>
+
+            <!-- Statistical Overview (with charts) -->
+            <div class="report-section" id="rsec-statistical_overview">
+              <div class="report-sec-header">
+                <span class="material-symbols-rounded">bar_chart</span>
+                <h2 class="report-sec-title">4. Statistical Overview</h2>
+                <span class="report-sec-badge" id="rss-statistical_overview" style="display:none">
+                  <span class="material-symbols-rounded">check_circle</span>Ready
+                </span>
+              </div>
+              <div class="report-charts-grid">
+                <div class="report-chart-card">
+                  <div class="report-chart-label">Level Distribution</div>
+                  <div class="report-chart-wrap"><canvas id="rpt-chart-levels"></canvas></div>
+                </div>
+                <div class="report-chart-card">
+                  <div class="report-chart-label">Top Loggers — Events vs Errors</div>
+                  <div class="report-chart-wrap"><canvas id="rpt-chart-loggers"></canvas></div>
+                </div>
+                <div class="report-chart-card report-chart-wide">
+                  <div class="report-chart-label">Events Per Hour</div>
+                  <div class="report-chart-wrap report-chart-tall"><canvas id="rpt-chart-hours"></canvas></div>
+                </div>
+                <div class="report-chart-card report-chart-wide">
+                  <div class="report-chart-label">Errors Per Hour</div>
+                  <div class="report-chart-wrap report-chart-tall"><canvas id="rpt-chart-errors-hour"></canvas></div>
+                </div>
+              </div>
+              <table class="report-stat-table">
+                <thead><tr><th>Level</th><th>Count</th><th>% of Total</th></tr></thead>
+                <tbody id="rpt-level-tbody"></tbody>
+              </table>
+            </div>
+
+            <!-- Appendix -->
+            <div class="report-section" id="rsec-appendix">
+              <div class="report-sec-header">
+                <span class="material-symbols-rounded">table_view</span>
+                <h2 class="report-sec-title">13. Appendix</h2>
+                <span class="report-sec-badge" id="rss-appendix" style="display:none">
+                  <span class="material-symbols-rounded">check_circle</span>Ready
+                </span>
+              </div>
+              <div id="report-appendix-content"></div>
+            </div>
+
+          </div><!-- end report-document -->
+        </div><!-- end report-main -->
+      </div><!-- end report-layout -->
     </section>
 
   </main>
