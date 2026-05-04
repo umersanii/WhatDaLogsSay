@@ -1546,6 +1546,24 @@ function initReport() {
   document.getElementById('report-generate-btn').addEventListener('click', startReportGeneration);
   document.getElementById('report-download-btn').addEventListener('click', downloadReport);
   buildSectionTracker();
+  // Populate model selector once models are loaded
+  populateReportModelSelect();
+}
+
+function populateReportModelSelect() {
+  fetch('/api/models').then(r => r.json()).then(data => {
+    const sel = document.getElementById('report-model-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    (data.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = `${m.name} (${m.provider})`;
+      sel.appendChild(opt);
+    });
+    // Default to same model as chat page if available
+    if (selectedModel) sel.value = selectedModel;
+  }).catch(() => {});
 }
 
 /* Build the left-sidebar section checklist */
@@ -1587,8 +1605,10 @@ function startReportGeneration() {
   // Build document skeleton
   buildDocumentSkeleton();
 
-  // Open SSE (GET endpoint)
-  reportEventSource = new EventSource('/api/report/generate');
+  // Open SSE — pass selected model as query param
+  const modelId = document.getElementById('report-model-select')?.value || '';
+  const sseUrl  = modelId ? `/api/report/generate?model=${encodeURIComponent(modelId)}` : '/api/report/generate';
+  reportEventSource = new EventSource(sseUrl);
   reportEventSource.onmessage = onReportSSE;
   reportEventSource.onerror   = () => onReportError();
 }
@@ -1636,13 +1656,27 @@ function onReportSSE(event) {
     setCurrentSectionLabel('Done ✓');
     setTimeout(() => finishReportGeneration(true), 1000);
   }
+
+  if (msg.type === 'error') {
+    // Server-side error surfaced through SSE — show it in the progress bar
+    setOverallProgress(0, `Server error: ${(msg.content || '').slice(0, 120)}`);
+    setCurrentSectionLabel('Error — check server logs');
+    finishReportGeneration(!!reportCurrentId);
+  }
+
+  if (msg.type === 'status') {
+    // Non-blocking status update (e.g. "waiting Xs for rate limits")
+    setCurrentSectionLabel(msg.content || '');
+  }
 }
 
 function onReportError() {
-  console.error('Report SSE connection error');
-  setOverallProgress(0, 'Connection error — is the server running?');
-  setCurrentSectionLabel('Error');
-  finishReportGeneration(false);
+  // SSE connection dropped — check if server is up
+  if (reportGenRunning) {
+    setOverallProgress(0, 'Connection lost — server may have restarted. Try again.');
+    setCurrentSectionLabel('Disconnected');
+    finishReportGeneration(!!reportCurrentId);
+  }
 }
 
 function buildDocumentSkeleton() {
@@ -1888,10 +1922,9 @@ function finishReportGeneration(success) {
 
 function downloadReport() {
   if (!reportCurrentId) return;
-  const a = document.createElement('a');
-  a.href = `/api/report/${reportCurrentId}/html`;
-  a.download = `log-report-${reportCurrentId}.html`;
-  a.click();
+  // Open in a new tab — the page auto-triggers window.print() after charts render.
+  // The browser's Print dialog lets the user save as PDF.
+  window.open(`/api/report/${reportCurrentId}/html?print=1`, '_blank');
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────

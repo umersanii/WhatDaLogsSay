@@ -356,31 +356,35 @@ async def generate_report(model: str = Query(default="")):
     report_sections: dict[str, str] = {}
 
     async def event_stream():
-        import hashlib, time as _time
+        import hashlib, time as _time, traceback as _tb
         report_id = hashlib.md5(f"{_time.time()}".encode()).hexdigest()[:10]
         nonlocal report_sections
 
-        async for msg in generate_report_sections(_state, client, model):
-            yield f"data: {json.dumps(msg)}\n\n"
+        try:
+            async for msg in generate_report_sections(_state, client, model):
+                # Accumulate section content for saving
+                if msg["type"] == "section_content":
+                    sec = msg["section"]
+                    report_sections[sec] = report_sections.get(sec, "") + msg["content"]
 
-            # Accumulate section content
-            if msg["type"] == "section_content":
-                sec = msg["section"]
-                report_sections[sec] = report_sections.get(sec, "") + msg["content"]
+                yield f"data: {json.dumps(msg)}\n\n"
 
-            # On complete, persist report to disk
-            if msg["type"] == "complete":
-                report_data = {
-                    "id": report_id,
-                    "filename": _state.log_filename,
-                    "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
-                    "model": model,
-                    "sections": report_sections,
-                    "summary": _state.summary,
-                }
-                report_path = REPORTS_DIR / f"{report_id}.json"
-                report_path.write_text(json.dumps(report_data, ensure_ascii=False, indent=2))
-                yield f"data: {json.dumps({'type': 'saved', 'report_id': report_id})}\n\n"
+                # On complete, persist report to disk
+                if msg["type"] == "complete":
+                    report_data = {
+                        "id":           report_id,
+                        "filename":     _state.log_filename,
+                        "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+                        "model":        model,
+                        "sections":     report_sections,
+                        "summary":      _state.summary,
+                    }
+                    report_path = REPORTS_DIR / f"{report_id}.json"
+                    report_path.write_text(json.dumps(report_data, ensure_ascii=False, indent=2))
+                    yield f"data: {json.dumps({'type': 'saved', 'report_id': report_id})}\n\n"
+        except Exception:
+            err = _tb.format_exc()
+            yield f"data: {json.dumps({'type': 'error', 'content': err[-400:]})}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -418,20 +422,22 @@ async def get_report(report_id: str):
 
 
 @app.get("/api/report/{report_id}/html")
-async def download_report_html(report_id: str):
+async def download_report_html(report_id: str, print: bool = Query(default=False)):
     path = REPORTS_DIR / f"{report_id}.json"
     if not path.exists():
         return JSONResponse({"error": "Report not found"}, status_code=404)
 
     report = json.loads(path.read_text())
-    html = _render_report_html(report)
+    html = _render_report_html(report, auto_print=print)
+    if print:
+        return HTMLResponse(content=html)
     return HTMLResponse(
         content=html,
         headers={"Content-Disposition": f'attachment; filename="report-{report_id}.html"'},
     )
 
 
-def _render_report_html(report: dict) -> str:
+def _render_report_html(report: dict, auto_print: bool = False) -> str:
     """Render the saved report JSON as a self-contained HTML file."""
     import re as _re
 
@@ -596,9 +602,23 @@ def _render_report_html(report: dict) -> str:
   .pain-section .md-content strong {{ color: var(--error); }}
   .footer {{ text-align: center; padding: 2rem; color: var(--muted); font-size: 0.8rem; border-top: 1px solid var(--border); }}
   @media print {{
-    body {{ background: white; color: black; }}
-    .cover {{ background: white; }}
-    section {{ border-top: 1px solid #ddd; }}
+    :root {{ --bg:#fff; --surface:#f8fafc; --border:#e2e8f0; --text:#0f172a; --muted:#64748b; --primary:#4f46e5; --error:#dc2626; }}
+    body {{ background: white; color: #0f172a; font-size: 11pt; }}
+    .cover {{ background: linear-gradient(135deg, #eef2ff 0%, #f0f9ff 100%); min-height: auto; page-break-after: always; }}
+    .cover h1 {{ color: #4f46e5; }}
+    .cover .meta-val {{ color: #4f46e5; }}
+    .cover .err-val  {{ color: #dc2626; }}
+    .toc {{ page-break-after: always; }}
+    section {{ page-break-inside: avoid; border-top: 1px solid #e2e8f0; }}
+    section h2 {{ color: #4f46e5; border-bottom-color: #e2e8f0; }}
+    .chart-card {{ border-color: #e2e8f0; background: #f8fafc; }}
+    .stat-table th {{ background: #f1f5f9; color: #475569; }}
+    .stat-table td {{ border-color: #e2e8f0; color: #0f172a; }}
+    .pain-section .md-content h3 {{ background: #fff1f2; border-color: #fecdd3; }}
+    .md-content code {{ background: #f1f5f9; color: #0e7490; }}
+    .md-content blockquote {{ border-color: #6366f1; }}
+    .footer {{ border-color: #e2e8f0; }}
+    canvas {{ max-width: 100% !important; }}
   }}
 </style>
 </head>
@@ -776,6 +796,7 @@ new Chart(errCtx, {{
   }}
 }});
 </script>
+{('<script>window.addEventListener("load",()=>setTimeout(()=>window.print(),800));</script>') if auto_print else ''}
 </body>
 </html>"""
 

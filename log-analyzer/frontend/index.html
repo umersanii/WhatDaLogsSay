@@ -400,6 +400,14 @@
             <span class="report-sidebar-title">Analysis Report</span>
           </div>
 
+          <!-- Model selector -->
+          <div class="report-model-wrap">
+            <span class="material-symbols-rounded" style="font-size:0.9rem;color:var(--c-on-surface-var)">model_training</span>
+            <select id="report-model-select" class="report-model-select" title="AI model for report generation">
+              <option value="">Loading models…</option>
+            </select>
+          </div>
+
           <!-- Generate / Download buttons -->
           <div class="report-actions">
             <button class="btn-filled report-gen-btn" id="report-generate-btn">
@@ -407,8 +415,8 @@
               <span>Generate Report</span>
             </button>
             <button class="btn-tonal report-dl-btn" id="report-download-btn" disabled>
-              <span class="material-symbols-rounded">download</span>
-              <span>Download HTML</span>
+              <span class="material-symbols-rounded">picture_as_pdf</span>
+              <span>Download PDF</span>
             </button>
           </div>
 

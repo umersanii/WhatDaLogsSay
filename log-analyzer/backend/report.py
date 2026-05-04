@@ -2,15 +2,24 @@
 Full log analysis report generator.
 Calls the LLM sequentially — one call per section — to produce a comprehensive,
 long-form report without hitting token limits.
-Each section streams back via an async generator yielding SSE-ready dicts.
+
+Rate-limit friendly: adds a configurable delay between LLM calls and retries
+with exponential backoff on 429 / transient errors.
 """
 import json
 import asyncio
+import traceback
 from datetime import datetime
 from typing import AsyncIterator, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend.api import AppState
+
+# Delay (seconds) between consecutive LLM calls — keeps free-plan rate limits happy.
+INTER_CALL_DELAY = 3.0
+# Retry settings for rate-limit errors
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 8.0  # doubles each retry
 
 # ── Section definitions ───────────────────────────────────────────────────────
 
@@ -62,27 +71,23 @@ def _build_abstract_prompt(summary: dict) -> str:
     lc = summary.get("level_counts", {})
     total = summary.get("total_events", 0)
     errors = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
-    return f"""You are writing a formal technical report on a log file analysis.
+    return f"""You are writing the ABSTRACT section of a formal technical log analysis report.
 
-Write the ABSTRACT section (300-400 words). This should be a standalone paragraph that concisely covers:
+Write 250-350 words as a single cohesive paragraph (no headers). Cover:
 - What system produced this log and what it does
-- The time period covered and scale of data
-- The most important findings (critical errors, performance issues, patterns)
-- The overall system health verdict
-- What the reader will find in the full report
+- Time period and scale of data
+- Most important findings (critical errors, key patterns)
+- Overall system health verdict
 
 Log context:
-- System type: {char.get('log_type', 'Unknown')}
-- System description: {char.get('system_description', 'N/A')}
+- System: {char.get('log_type', 'Unknown')} — {char.get('system_description', '')}
 - Time range: {dr.get('first', 'N/A')} → {dr.get('last', 'N/A')} ({dr.get('span_hours', 0):.1f} hours)
-- Total events: {total:,}
+- Total events: {total:,} | Error rate: {errors/max(total,1)*100:.2f}% ({errors:,} errors)
 - Level distribution: {_fmt_json(lc)}
-- Error rate: {errors/total*100:.2f}% ({errors:,} errors/criticals out of {total:,})
-- Key entities: {char.get('key_entities', [])}
-- Key event types: {char.get('key_event_types', [])}
 - Error bursts: {_fmt_json(summary.get('error_bursts', [])[:5])}
+- Key entities: {char.get('key_entities', [])}
 
-Write ONLY the abstract text — no headers, no markdown fences. Use formal technical language."""
+Write ONLY the abstract text. No headers, no bullet points. Formal technical language."""
 
 
 def _build_executive_summary_prompt(summary: dict) -> str:
@@ -92,77 +97,64 @@ def _build_executive_summary_prompt(summary: dict) -> str:
     errors = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
     bursts = summary.get("error_bursts", [])
     top_loggers = summary.get("top_loggers", [])[:10]
-    error_samples = summary.get("error_samples", [])[:15]
-    return f"""You are writing the EXECUTIVE SUMMARY section of a formal log analysis report.
+    error_samples = summary.get("error_samples", [])[:10]
+    return f"""Write the EXECUTIVE SUMMARY section of a log analysis report (400-550 words).
 
-This section is for technical managers and senior engineers. Write 500-700 words covering:
+Use these markdown headers exactly:
 
 ## Key Findings
-- Top 5 most important findings from the log, with specific timestamps and counts
+List the 5 most important findings with specific timestamps and counts.
 
 ## System Health Verdict
-- Overall health score (Healthy / Degraded / Critical) with justification
-- Which components are healthy vs problematic
+Overall health: Healthy / Degraded / Critical. One paragraph justifying the verdict.
 
 ## Top 3 Critical Pain Points
-For each pain point:
-- What is happening (describe the problem)
-- When it happens (specific timestamps or time ranges)
-- Which logger/component is responsible
-- How severe is it (quantify with real numbers)
+For each: what is happening, when (specific timestamps), which logger, severity.
 
 ## Immediate Actions Required
-- 3-5 concrete actions the team should take, ordered by priority
+3-5 concrete numbered actions ordered by priority.
 
 Log data:
 - System: {char.get('log_type', 'Unknown')} — {char.get('system_description', '')}
-- Time range: {summary.get('date_range', {}).get('first')} → {summary.get('date_range', {}).get('last')}
-- Total events: {total:,} | Errors: {errors:,} ({errors/max(total,1)*100:.1f}%)
+- Time: {summary.get('date_range', {}).get('first')} → {summary.get('date_range', {}).get('last')}
+- Events: {total:,} | Errors: {errors:,} ({errors/max(total,1)*100:.1f}%)
 - Level counts: {_fmt_json(lc)}
 - Error bursts: {_fmt_json(bursts)}
-- Top loggers by error rate: {_fmt_json(sorted(top_loggers, key=lambda x: -x.get('error_rate', 0))[:8])}
+- Top loggers by error rate: {_fmt_json(sorted(top_loggers, key=lambda x: -x.get('error_rate',0))[:6])}
 - Error samples: {_fmt_json(error_samples)}
 
-Write in markdown with headers (##, ###). Be specific — use real timestamps and numbers from the data."""
+Be specific — use real timestamps and numbers."""
 
 
 def _build_system_overview_prompt(summary: dict) -> str:
     char = summary.get("characterization", {})
     top_loggers = summary.get("top_loggers", [])[:20]
     dr = summary.get("date_range", {})
-    return f"""You are writing the SYSTEM OVERVIEW section of a formal log analysis report.
+    return f"""Write the SYSTEM OVERVIEW section of a log analysis report (400-500 words).
 
-Write 500-600 words covering:
+Use these markdown headers:
 
 ## System Description
-- What system/application produced this log
-- Inferred architecture and purpose
-- Technology stack clues from the log data
+What system/application produced this log, its purpose and technology stack.
 
 ## Component Inventory
-- List every significant logger as a component
-- For each component: what it does, how active it is, its role in the system
-- Identify the system topology (what calls what)
+Table or list: each significant logger → what it does → event count → role.
 
 ## Operational Context
-- When was this log captured and for how long
-- What was the system doing during this period
-- Any notable initialization, shutdown, or maintenance events
+When captured, how long, what the system was doing, any notable init/shutdown events.
 
 ## Key Identifiers
-- Important model names, IDs, hostnames, version strings found in the logs
+Important model names, IDs, hostnames, version strings from the logs.
 
 Log data:
 - Log type: {char.get('log_type', 'Unknown')}
-- System description: {char.get('system_description', '')}
+- Description: {char.get('system_description', '')}
 - Key entities: {char.get('key_entities', [])}
 - Key event types: {char.get('key_event_types', [])}
 - Important loggers: {char.get('important_loggers', [])}
 - Noisy loggers: {char.get('noisy_loggers', [])}
-- Time range: {dr.get('first')} → {dr.get('last')} ({dr.get('span_hours', 0):.1f} hours, days: {dr.get('days', [])})
-- All loggers: {_fmt_json(top_loggers)}
-
-Write in markdown with headers. Be specific and technical."""
+- Time range: {dr.get('first')} → {dr.get('last')} ({dr.get('span_hours', 0):.1f} hours)
+- All loggers: {_fmt_json(top_loggers[:15])}"""
 
 
 def _build_error_analysis_prompt(summary: dict, rag_context: str) -> str:
@@ -171,87 +163,72 @@ def _build_error_analysis_prompt(summary: dict, rag_context: str) -> str:
     errors = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
     error_samples = summary.get("error_samples", [])
     top_loggers = summary.get("top_loggers", [])
-    high_error_loggers = [l for l in top_loggers if l.get("error_rate", 0) > 0.01]
-    return f"""You are writing the ERROR ANALYSIS section of a formal log analysis report.
+    high_error_loggers = [l for l in top_loggers if l.get("error_rate", 0) > 0.01][:8]
+    return f"""Write the ERROR ANALYSIS section of a log analysis report (550-700 words).
 
-Write 700-900 words with deep technical analysis covering:
+Use these markdown headers:
 
 ## Error Overview
-- Total error count, percentage, distribution by severity
-- Timeline of when errors occur (which hours/periods are worst)
+Total errors, percentage, severity breakdown by level.
 
 ## Error Categories
-- Group errors into categories by root cause or pattern
-- For each category: frequency, affected components, example log lines (use actual lines from the samples)
+Group errors by root cause. For each: frequency, affected components, example log line.
 
 ## Root Cause Analysis
-- For the most frequent errors: what is the likely root cause?
-- Are errors correlated (does A cause B)?
-- Are errors clustered in time (bursts) or spread evenly?
+For the top 3 most frequent errors: likely root cause, correlation with other events.
 
 ## Most Problematic Loggers
-- Which loggers have the highest absolute error counts?
-- Which have the highest error RATE (errors/total)?
-- What does each logger's error pattern tell us?
+Loggers with highest error count and highest error rate. What their patterns tell us.
 
 ## Critical Events
-- List the most severe individual events with their exact timestamps
-- Explain why each is significant
+The 3-5 most severe individual events with exact timestamps and why they matter.
 
 Log data:
-- Total events: {total:,} | Errors: {errors:,} | Critical: {lc.get('CRITICAL', 0):,}
+- Total: {total:,} | Errors: {errors:,} | Critical: {lc.get('CRITICAL', 0):,}
 - Level counts: {_fmt_json(lc)}
 - High-error-rate loggers: {_fmt_json(high_error_loggers)}
-- Error samples (up to 60): {_fmt_json(error_samples)}
+- Error samples: {_fmt_json(error_samples[:20])}
 
-Relevant log excerpts from semantic search:
+Log excerpts:
 {rag_context}
 
-Write in markdown with headers. Include exact timestamps and log messages in your analysis. Be technical and precise."""
+Include exact timestamps and actual log messages. Be technical."""
 
 
 def _build_error_bursts_prompt(summary: dict, rag_context: str) -> str:
     bursts = summary.get("error_bursts", [])
     errors_per_hour = summary.get("errors_per_hour", {})
-    events_per_hour = summary.get("events_per_hour", {})
-    error_samples = summary.get("error_samples", [])[:20]
-    return f"""You are writing the ERROR BURST ANALYSIS section of a formal log analysis report.
+    error_samples = summary.get("error_samples", [])[:15]
+    if not bursts:
+        return """Write the ERROR BURST ANALYSIS section (150 words).
+State that no significant error bursts were detected in this log.
+Describe the normal error distribution pattern instead.
+Use markdown."""
+    return f"""Write the ERROR BURST ANALYSIS section of a log analysis report (500-650 words).
 
-Write 600-800 words. An "error burst" is a period where errors spike far above the normal rate. For each burst:
+For EACH burst write a subsection:
+### Burst at [TIME]
+- Exact window, peak error count, affected loggers
+- Sequence of events leading in and out of the burst
+- Likely trigger based on the error messages
+- Recovery time and method
 
-## Burst Identification
-- List each burst with exact time, duration, and peak error rate
-- Compare to normal (baseline) error rate
-
-## Burst Deep Dives
-For EACH burst, write a dedicated subsection:
-### Burst at [TIMESTAMP]
-- Exact time window
-- Number of errors in this burst
-- Which loggers were affected
-- The sequence of events leading into and out of the burst
-- What the error messages reveal about the trigger
-- Was the system able to recover? How long did recovery take?
-
+Then add:
 ## Burst Patterns
-- Do bursts follow a predictable pattern?
-- Are there leading indicators (warnings before bursts)?
-- Are bursts correlated with specific events (restarts, load spikes, config changes)?
+Common triggers, leading indicators, correlation with restarts/load.
 
-## Impact Assessment
-- What was the user/system impact during bursts?
-- What operations were disrupted?
+## Impact
+What was disrupted during bursts.
 
 Log data:
-- Error bursts (hours where errors > 5× average): {_fmt_json(bursts)}
-- Errors per hour (all): {_fmt_json(errors_per_hour)}
-- Events per hour (all): {_fmt_json(events_per_hour)}
+- Error bursts detected: {_fmt_json(bursts)}
+- Errors per hour context: {_fmt_json(dict(list(errors_per_hour.items())[:20]))}
 - Error samples: {_fmt_json(error_samples)}
 
-Relevant log excerpts from semantic search:
+Log excerpts:
 {rag_context}
 
-Write in markdown. Use exact timestamps. Be very specific about what happened during each burst."""
+Use exact timestamps. Be very specific about what happened in each burst."""
 
 
 def _build_performance_prompt(summary: dict, rag_context: str) -> str:
@@ -259,205 +236,145 @@ def _build_performance_prompt(summary: dict, rag_context: str) -> str:
     errors_per_hour = summary.get("errors_per_hour", {})
     dr = summary.get("date_range", {})
     total = summary.get("total_events", 0)
-    hours = dr.get("span_hours", 1) or 1
-    avg_rate = total / hours
-    return f"""You are writing the PERFORMANCE & THROUGHPUT section of a formal log analysis report.
-
-Write 500-700 words covering:
+    hours = max(dr.get("span_hours", 1) or 1, 0.01)
+    return f"""Write the PERFORMANCE & THROUGHPUT section of a log analysis report (400-500 words).
 
 ## Throughput Analysis
-- Average events per hour across the log period
-- Peak throughput periods (highest events/hour) — what was happening?
-- Low throughput periods — idle time, maintenance windows, or problems?
-- Throughput variability (stable vs. erratic)
+Average events/hour, peak periods (what was happening), low periods.
 
 ## Performance Patterns
-- Is there a diurnal pattern (busy/quiet at certain hours)?
-- Are there sudden throughput drops that might indicate failures?
-- Correlation between high throughput and high error rates
+Diurnal patterns, throughput drops, correlation between volume and errors.
 
 ## Bottleneck Indicators
-- Which periods show stress indicators (high errors + high volume)?
-- Are there periods where the system appears overwhelmed?
+Periods of stress (high errors + high volume), signs of system being overwhelmed.
 
 ## System Availability
-- Estimate uptime vs. downtime periods
-- Any gaps in logging that might indicate crashes or restarts?
+Uptime estimate, gaps in logging that might indicate crashes.
 
 Log data:
 - Time range: {dr.get('first')} → {dr.get('last')} ({hours:.1f} hours)
-- Total events: {total:,}
-- Average events/hour: {avg_rate:.0f}
-- Events per hour: {_fmt_json(events_per_hour)}
-- Errors per hour: {_fmt_json(errors_per_hour)}
+- Total events: {total:,} | Avg/hour: {total/hours:.0f}
+- Events per hour (sample): {_fmt_json(dict(list(events_per_hour.items())[:15]))}
+- Errors per hour (sample): {_fmt_json(dict(list(errors_per_hour.items())[:15]))}
 
-Relevant log excerpts from semantic search:
+Log excerpts:
 {rag_context}
 
-Write in markdown with headers. Reference specific timestamps when discussing patterns."""
+Reference specific timestamps when discussing patterns."""
 
 
 def _build_component_health_prompt(summary: dict, rag_context: str) -> str:
-    top_loggers = summary.get("top_loggers", [])[:25]
+    top_loggers = summary.get("top_loggers", [])[:20]
     char = summary.get("characterization", {})
-    important = char.get("important_loggers", [])
-    noisy = char.get("noisy_loggers", [])
-    error_samples = summary.get("error_samples", [])[:20]
-    return f"""You are writing the COMPONENT HEALTH REPORT section of a formal log analysis report.
+    error_samples = summary.get("error_samples", [])[:15]
+    return f"""Write the COMPONENT HEALTH REPORT section of a log analysis report (500-650 words).
 
-Write 700-900 words. Assess the health of EVERY significant component (logger) in the system.
+## Health Summary Table
+For each significant logger: | Logger | Events | Error Rate | Status |
+Status: ✅ Healthy / ⚠️ Warning / 🔴 Critical
 
-## Health Assessment Methodology
-- Explain how health is determined (error rate, activity, patterns)
-
-## Component Health Table Summary
-- List each component with: event count, error count, error rate %, health status (Healthy/Warning/Critical)
-
-## Detailed Component Analysis
-For each component with Warning or Critical status, write a subsection:
-### [Component Name] — STATUS
-- What this component does
-- How many events it logged
-- Error rate and types of errors
-- Specific problematic behaviors observed
-- Recommended actions
+## Detailed Analysis (Warning/Critical only)
+For each problematic component:
+### [Logger Name] — ⚠️/🔴 STATUS
+- What it does, event count, error rate
+- Specific problematic behaviors with example log lines
+- Recommended action
 
 ## Healthy Components
-- Brief mention of components operating normally
-- Note any components that are suspiciously silent (possible dead code or down services)
+Brief one-liner for loggers operating normally.
 
-## Cross-Component Dependencies
-- Which components interact based on log patterns?
-- Are there cascading failures (one component failing causes others to fail)?
+## Cascading Failures
+Any components where one failure causes others to fail.
 
 Log data:
-- Important loggers: {important}
-- Noisy/low-signal loggers: {noisy}
-- All loggers with counts and error rates: {_fmt_json(top_loggers)}
-- Error samples by logger: {_fmt_json(error_samples)}
+- Important loggers: {char.get('important_loggers', [])}
+- Noisy loggers: {char.get('noisy_loggers', [])}
+- All loggers: {_fmt_json(top_loggers)}
+- Error samples: {_fmt_json(error_samples)}
 
-Relevant log excerpts:
-{rag_context}
-
-Write in markdown. For each Warning/Critical component give a health score like: ⚠️ WARNING or 🔴 CRITICAL."""
+Log excerpts:
+{rag_context}"""
 
 
 def _build_pattern_analysis_prompt(summary: dict) -> str:
-    top_patterns = summary.get("top_patterns", [])[:30]
+    top_patterns = summary.get("top_patterns", [])[:25]
     lc = summary.get("level_counts", {})
     total = summary.get("total_events", 0)
-    return f"""You are writing the PATTERN ANALYSIS section of a formal log analysis report.
+    return f"""Write the PATTERN ANALYSIS section of a log analysis report (400-500 words).
 
-Write 500-700 words covering:
-
-## Most Frequent Message Patterns
-- Analyze the top recurring message patterns
-- What do high-frequency patterns tell us about normal system operation?
-- Which patterns indicate healthy activity vs. problems?
+## Most Frequent Patterns
+Top recurring messages: what they indicate about normal vs. abnormal operation.
 
 ## Anomalous Patterns
-- Which patterns appear at abnormal frequencies?
-- Are there patterns that should NOT be this common?
-- Any patterns that suggest misconfigurations or bugs?
+Patterns at unexpected frequency. Any that suggest bugs or misconfigurations.
 
 ## Pattern Categories
-Group patterns into categories:
-- Initialization/startup patterns
-- Normal operational patterns
-- Warning/error patterns
-- Retry/recovery patterns
+Group into: Initialization / Normal operation / Warning-error / Retry-recovery.
 
-## Pattern Insights
-- What do the patterns reveal about the system's architecture?
-- Are there any patterns that suggest inefficiencies?
-- Any patterns that would be useful for alerting?
+## Actionable Insights
+Which patterns would make good alert triggers. Any inefficiency indicators.
 
 Log data:
-- Total events: {total:,}
-- Level counts: {_fmt_json(lc)}
-- Top 30 message patterns (normalized, with count): {_fmt_json(top_patterns)}
+- Total events: {total:,} | Levels: {_fmt_json(lc)}
+- Top patterns (normalized, with count): {_fmt_json(top_patterns)}
 
-Write in markdown. Quote specific pattern strings when discussing them."""
+Quote specific pattern strings in your analysis."""
 
 
 def _build_entity_analysis_prompt(summary: dict) -> str:
     entities = summary.get("entities", {})
     char = summary.get("characterization", {})
-    return f"""You are writing the ENTITY ANALYSIS section of a formal log analysis report.
+    return f"""Write the ENTITY ANALYSIS section of a log analysis report (300-400 words).
 
-Write 400-600 words covering:
-
-## IP Addresses & Network Entities
-- What IP addresses/hostnames appear in the log?
-- Which are most active? What role do they play?
-- Any suspicious or unexpected IPs?
+## Network Entities
+IP addresses/hostnames: which are most active, their roles, anything suspicious.
 
 ## File System Paths
-- What file paths are referenced?
-- What do they reveal about the system's file organization?
-- Any paths that appear frequently in error contexts?
+Referenced paths: what they reveal about system layout, any in error contexts.
 
-## Quoted Values & Identifiers
-- What named entities (IDs, names, labels) appear frequently?
-- What do the most common quoted values represent?
-- Any values that appear in error contexts specifically?
-
-## Security Observations
-- Are there any authentication-related entities?
-- Any access control or permission-related patterns?
-- Sensitive data patterns (if any) in log messages?
+## Key Identifiers
+Most common quoted values/IDs: what they represent, any appearing in errors.
 
 Log data:
-- Key entities from AI characterization: {char.get('key_entities', [])}
-- Extracted IPs: {_fmt_json(entities.get('ip_addresses', {}))}
-- Extracted file paths: {_fmt_json(entities.get('file_paths', {}))}
-- Extracted quoted values: {_fmt_json(entities.get('quoted_values', {}))}
-
-Write in markdown. Be specific about what each entity type means in the context of this system."""
+- Key entities (AI-identified): {char.get('key_entities', [])}
+- IPs: {_fmt_json(entities.get('ip_addresses', {}))}
+- File paths: {_fmt_json(entities.get('file_paths', {}))}
+- Quoted values: {_fmt_json(entities.get('quoted_values', {}))}"""
 
 
 def _build_pain_points_prompt(summary: dict, rag_context: str) -> str:
     bursts = summary.get("error_bursts", [])
     error_samples = summary.get("error_samples", [])
     top_loggers = summary.get("top_loggers", [])
-    high_error = [l for l in top_loggers if l.get("error_rate", 0) > 0.05]
+    high_error = [l for l in top_loggers if l.get("error_rate", 0) > 0.05][:6]
     lc = summary.get("level_counts", {})
     total = summary.get("total_events", 0)
-    return f"""You are writing the most important section of this log analysis report: PAIN POINTS & WHERE TO LOOK.
+    return f"""Write PAIN POINTS & WHERE TO LOOK — the most actionable section of this report (600-800 words).
 
-Write 800-1000 words. This section is the actionable guide for engineers who need to debug this system.
+This is a debugging guide for engineers. For each pain point use this exact format:
 
-For each pain point, provide ALL of this information:
-1. **Pain Point Title** — clear name for the issue
-2. **Severity** — Critical / High / Medium / Low
-3. **Description** — what is happening, why it's a problem
-4. **When it occurs** — exact timestamp ranges, hours of the day, frequency
-5. **Where to look** — EXACT logger names to filter on
-6. **What to search for** — exact keywords or patterns to search in the log
-7. **Sample log lines** — quote 2-3 actual log lines that show this problem (with timestamps)
-8. **Likely cause** — technical root cause hypothesis
-9. **Impact** — what systems/users are affected
+### Pain Point N: [Clear Title]
+**Severity:** Critical / High / Medium / Low
+**When:** [exact timestamps or frequency]
+**Logger(s):** `logger_name`
+**Search for:** `keyword or pattern`
+**What's happening:** one sentence description
+**Sample log line:** quote an actual log line with timestamp
+**Likely cause:** technical hypothesis
+**Impact:** what breaks or degrades
 
-Identify AT LEAST 5 distinct pain points. Order them by severity (Critical first).
-
-Format each as:
-### Pain Point N: [Title]
-**Severity:** [level]
-**When:** [timestamp range or frequency]
-**Logger(s):** `[logger names]`
-**Search for:** `[keywords]`
-...etc
+Identify 5-7 distinct pain points ordered by severity (Critical first).
 
 Log data:
-- Total events: {total:,} | Errors: {lc.get('ERROR',0)+lc.get('CRITICAL',0):,}
+- Events: {total:,} | Errors: {lc.get('ERROR',0)+lc.get('CRITICAL',0):,}
 - High error-rate loggers: {_fmt_json(high_error)}
 - Error bursts: {_fmt_json(bursts)}
-- Error samples: {_fmt_json(error_samples)}
+- Error samples: {_fmt_json(error_samples[:20])}
 
-Relevant log excerpts from semantic search:
+Log excerpts:
 {rag_context}
 
-Be EXTREMELY specific — engineers will use this section as a debugging guide. Include exact timestamps, logger names, and quoted log messages."""
+Include exact timestamps and actual quoted log lines. Engineers will use this to debug."""
 
 
 def _build_recommendations_prompt(summary: dict, rag_context: str) -> str:
@@ -466,76 +383,84 @@ def _build_recommendations_prompt(summary: dict, rag_context: str) -> str:
     total = summary.get("total_events", 0)
     errors = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
     bursts = summary.get("error_bursts", [])
-    top_loggers = summary.get("top_loggers", [])[:15]
-    return f"""You are writing the RECOMMENDATIONS section of a formal log analysis report.
+    top_loggers = summary.get("top_loggers", [])[:10]
+    return f"""Write the RECOMMENDATIONS section of a log analysis report (450-550 words).
 
-Write 600-800 words. Provide concrete, prioritized recommendations for the engineering team.
+## Immediate Actions (within 24 hours)
+Numbered list. Fix critical issues. Each cites specific log evidence.
 
-## Immediate Actions (Do within 24 hours)
-- Fix or mitigate critical issues found in the logs
-- Each item must reference the specific log evidence that justifies it
+## Short-term (1-2 weeks)
+Root cause fixes, reliability improvements, alerting improvements.
 
-## Short-term Improvements (1-2 weeks)
-- Address the underlying root causes of recurring errors
-- Performance and reliability improvements
-- Monitoring/alerting improvements based on identified pain points
-
-## Long-term Architectural Improvements
-- Systemic changes to improve reliability
-- Logging hygiene improvements (what to add/remove)
-- Architecture changes suggested by the error patterns
-
-## Logging Improvements
-- What additional logging would help diagnose future issues?
-- What log levels should be changed for specific loggers?
-- Any unnecessary verbosity that creates noise?
+## Long-term
+Architecture changes, logging hygiene (what to add/remove), observability.
 
 ## Monitoring & Alerting
-- What specific thresholds should be set for alerts?
-- Which metrics matter most based on this log?
-- What dashboards should be created?
-
-For each recommendation, cite the specific evidence from the log that justifies it.
+3-5 specific alert thresholds based on this log's patterns.
 
 Log data:
 - System: {char.get('log_type')} — {char.get('system_description', '')}
-- Error rate: {errors/max(total,1)*100:.1f}% ({errors:,} of {total:,})
+- Error rate: {errors/max(total,1)*100:.1f}% ({errors:,}/{total:,})
 - Error bursts: {_fmt_json(bursts)}
-- Logger error rates: {_fmt_json(sorted(top_loggers, key=lambda x: -x.get('error_rate',0))[:10])}
+- Logger error rates: {_fmt_json(sorted(top_loggers, key=lambda x: -x.get('error_rate',0))[:8])}
 
-Relevant log excerpts:
+Log excerpts:
 {rag_context}
 
-Write in markdown. Use numbered lists for priorities. Be specific and actionable."""
+Each recommendation must cite specific log evidence."""
 
 
 # ── RAG helper ─────────────────────────────────────────────────────────────────
 
-def _rag_search(state: "AppState", query: str, top_k: int = 6) -> str:
+def _rag_search(state: "AppState", query: str, top_k: int = 5) -> str:
     if not state.rag_store:
         return "(RAG index not available)"
-    results = state.rag_store.query(query, top_k=top_k)
+    try:
+        results = state.rag_store.query(query, top_k=top_k)
+    except Exception:
+        return "(RAG search failed)"
     if not results:
         return "(No relevant excerpts found)"
     parts = []
     for r in results:
         parts.append(
-            f"[{r['chunk_type'].upper()} | {r['ts_start']} → {r['ts_end']}]\n{r['text'][:600]}"
+            f"[{r['chunk_type'].upper()} | {r['ts_start']} → {r['ts_end']}]\n{r['text'][:500]}"
         )
     return "\n\n---\n\n".join(parts)
 
 
-# ── LLM call helper ────────────────────────────────────────────────────────────
+# ── LLM call with retry ────────────────────────────────────────────────────────
 
-async def _call_llm(client: Any, model: str, prompt: str, max_tokens: int = 2000) -> str:
-    """Non-streaming LLM call. Returns full text."""
-    resp = await client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-        stream=False,
-    )
-    return resp.choices[0].message.content or ""
+async def _call_llm_with_retry(
+    client: Any,
+    model: str,
+    prompt: str,
+    max_tokens: int = 1500,
+) -> str:
+    """Call LLM with exponential-backoff retry on rate-limit errors."""
+    delay = RETRY_BASE_DELAY
+    last_err = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                stream=False,
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            # Retry on rate-limit or transient errors
+            if "rate" in err_str or "429" in err_str or "timeout" in err_str or "502" in err_str or "503" in err_str:
+                if attempt < MAX_RETRIES - 1:
+                    wait = delay * (2 ** attempt)
+                    await asyncio.sleep(wait)
+                    continue
+            # Non-retriable error — raise immediately
+            raise
+    raise last_err or RuntimeError("LLM call failed after retries")
 
 
 # ── Main generator ─────────────────────────────────────────────────────────────
@@ -547,173 +472,147 @@ async def generate_report_sections(
 ) -> AsyncIterator[dict]:
     """
     Yields SSE-ready dicts for each report section.
-    Sections are generated sequentially — one LLM call each.
+    Sections are generated sequentially with INTER_CALL_DELAY between LLM calls.
+    All exceptions are caught and surfaced as section error content so the SSE
+    stream never closes unexpectedly.
     """
     summary = state.summary or {}
-    char = summary.get("characterization", {})
-    dr = summary.get("date_range", {})
-    lc = summary.get("level_counts", {})
-    total = summary.get("total_events", len(state.events))
-    errors = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
+    char    = summary.get("characterization", {})
+    dr      = summary.get("date_range", {})
+    lc      = summary.get("level_counts", {})
+    total   = summary.get("total_events", len(state.events))
+    errors  = lc.get("ERROR", 0) + lc.get("CRITICAL", 0)
 
     yield {"type": "start", "total_sections": len(SECTIONS)}
 
+    # Track how many LLM calls we've made so we can insert delays
+    llm_call_count = 0
+
+    async def llm_section(section_id: str, index: int, prompt_fn, max_tokens: int = 1500, rag_query: str = ""):
+        """Helper: yield start → content → done for one LLM section."""
+        nonlocal llm_call_count
+        yield {"type": "section_start", "section": section_id, "index": index}
+
+        # Delay between LLM calls to respect rate limits
+        if llm_call_count > 0:
+            yield {"type": "status", "content": f"Waiting {INTER_CALL_DELAY}s to respect rate limits…"}
+            await asyncio.sleep(INTER_CALL_DELAY)
+
+        try:
+            rag_ctx = _rag_search(state, rag_query, top_k=5) if rag_query else ""
+            prompt  = prompt_fn(summary, rag_ctx) if rag_query else prompt_fn(summary)
+            text    = await _call_llm_with_retry(client, model, prompt, max_tokens=max_tokens)
+            llm_call_count += 1
+            yield {"type": "section_content", "section": section_id, "content": text}
+        except Exception as e:
+            tb = traceback.format_exc()
+            yield {"type": "section_content", "section": section_id,
+                   "content": f"*Error generating this section: {e}*\n\n```\n{tb[-500:]}\n```"}
+        yield {"type": "section_done", "section": section_id}
+
     # ── 1. Cover (static) ──────────────────────────────────────────────────────
     yield {"type": "section_start", "section": "cover", "index": 0}
-    cover_content = {
-        "filename": state.log_filename,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "log_type": char.get("log_type", "Unknown"),
-        "format": summary.get("format", "Unknown"),
+    yield {"type": "section_content", "section": "cover", "content": json.dumps({
+        "filename":        state.log_filename,
+        "generated_at":    datetime.now().isoformat(timespec="seconds"),
+        "log_type":        char.get("log_type", "Unknown"),
+        "format":          summary.get("format", "Unknown"),
         "time_range_first": dr.get("first", "N/A"),
-        "time_range_last": dr.get("last", "N/A"),
-        "span_hours": dr.get("span_hours", 0),
-        "total_events": total,
-        "error_count": errors,
-        "error_rate_pct": round(errors / max(total, 1) * 100, 2),
+        "time_range_last":  dr.get("last", "N/A"),
+        "span_hours":      dr.get("span_hours", 0),
+        "total_events":    total,
+        "error_count":     errors,
+        "error_rate_pct":  round(errors / max(total, 1) * 100, 2),
         "system_description": char.get("system_description", ""),
-    }
-    yield {"type": "section_content", "section": "cover", "content": json.dumps(cover_content)}
+    })}
     yield {"type": "section_done", "section": "cover"}
 
     # ── 2. Table of Contents (static) ─────────────────────────────────────────
     yield {"type": "section_start", "section": "table_of_contents", "index": 1}
-    toc_entries = [
+    yield {"type": "section_content", "section": "table_of_contents", "content": json.dumps([
         {"num": i+1, "title": SECTION_TITLES[s], "section": s}
-        for i, s in enumerate(SECTIONS[2:], start=1)  # skip cover and TOC itself
-    ]
-    yield {"type": "section_content", "section": "table_of_contents", "content": json.dumps(toc_entries)}
+        for i, s in enumerate(SECTIONS[2:], start=1)
+    ])}
     yield {"type": "section_done", "section": "table_of_contents"}
 
     # ── 3. Abstract (LLM) ─────────────────────────────────────────────────────
-    yield {"type": "section_start", "section": "abstract", "index": 2}
-    try:
-        text = await _call_llm(client, model, _build_abstract_prompt(summary), max_tokens=600)
-        yield {"type": "section_content", "section": "abstract", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "abstract", "content": f"*Error generating abstract: {e}*"}
-    yield {"type": "section_done", "section": "abstract"}
+    async for msg in llm_section("abstract", 2, _build_abstract_prompt, max_tokens=500):
+        yield msg
 
     # ── 4. Executive Summary (LLM) ────────────────────────────────────────────
-    yield {"type": "section_start", "section": "executive_summary", "index": 3}
-    try:
-        text = await _call_llm(client, model, _build_executive_summary_prompt(summary), max_tokens=1500)
-        yield {"type": "section_content", "section": "executive_summary", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "executive_summary", "content": f"*Error generating executive summary: {e}*"}
-    yield {"type": "section_done", "section": "executive_summary"}
+    async for msg in llm_section("executive_summary", 3, _build_executive_summary_prompt, max_tokens=800):
+        yield msg
 
     # ── 5. System Overview (LLM) ──────────────────────────────────────────────
-    yield {"type": "section_start", "section": "system_overview", "index": 4}
-    try:
-        text = await _call_llm(client, model, _build_system_overview_prompt(summary), max_tokens=1200)
-        yield {"type": "section_content", "section": "system_overview", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "system_overview", "content": f"*Error generating system overview: {e}*"}
-    yield {"type": "section_done", "section": "system_overview"}
+    async for msg in llm_section("system_overview", 4, _build_system_overview_prompt, max_tokens=700):
+        yield msg
 
-    # ── 6. Statistical Overview (static — chart data) ─────────────────────────
+    # ── 6. Statistical Overview (static — chart data, no LLM) ────────────────
     yield {"type": "section_start", "section": "statistical_overview", "index": 5}
-    stat_content = {
-        "level_counts": lc,
-        "total_events": total,
+    yield {"type": "section_content", "section": "statistical_overview", "content": json.dumps({
+        "level_counts":    lc,
+        "total_events":    total,
         "events_per_hour": summary.get("events_per_hour", {}),
         "errors_per_hour": summary.get("errors_per_hour", {}),
-        "top_loggers": summary.get("top_loggers", [])[:20],
-        "error_bursts": summary.get("error_bursts", []),
-        "date_range": dr,
-    }
-    yield {"type": "section_content", "section": "statistical_overview", "content": json.dumps(stat_content)}
+        "top_loggers":     summary.get("top_loggers", [])[:20],
+        "error_bursts":    summary.get("error_bursts", []),
+        "date_range":      dr,
+    })}
     yield {"type": "section_done", "section": "statistical_overview"}
 
     # ── 7. Error Analysis (LLM + RAG) ─────────────────────────────────────────
-    yield {"type": "section_start", "section": "error_analysis", "index": 6}
-    try:
-        rag_ctx = _rag_search(state, "error critical failure exception traceback", top_k=8)
-        text = await _call_llm(client, model, _build_error_analysis_prompt(summary, rag_ctx), max_tokens=2000)
-        yield {"type": "section_content", "section": "error_analysis", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "error_analysis", "content": f"*Error generating error analysis: {e}*"}
-    yield {"type": "section_done", "section": "error_analysis"}
+    async for msg in llm_section("error_analysis", 6,
+                                  _build_error_analysis_prompt, max_tokens=900,
+                                  rag_query="error critical failure exception traceback"):
+        yield msg
 
     # ── 8. Error Bursts (LLM + RAG) ───────────────────────────────────────────
-    yield {"type": "section_start", "section": "error_bursts", "index": 7}
-    try:
-        rag_ctx = _rag_search(state, "error burst spike surge multiple failures", top_k=8)
-        text = await _call_llm(client, model, _build_error_bursts_prompt(summary, rag_ctx), max_tokens=1800)
-        yield {"type": "section_content", "section": "error_bursts", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "error_bursts", "content": f"*Error generating burst analysis: {e}*"}
-    yield {"type": "section_done", "section": "error_bursts"}
+    async for msg in llm_section("error_bursts", 7,
+                                  _build_error_bursts_prompt, max_tokens=800,
+                                  rag_query="error burst spike surge multiple failures"):
+        yield msg
 
     # ── 9. Performance & Throughput (LLM + RAG) ───────────────────────────────
-    yield {"type": "section_start", "section": "performance_throughput", "index": 8}
-    try:
-        rag_ctx = _rag_search(state, "slow timeout latency throughput performance degradation", top_k=6)
-        text = await _call_llm(client, model, _build_performance_prompt(summary, rag_ctx), max_tokens=1500)
-        yield {"type": "section_content", "section": "performance_throughput", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "performance_throughput", "content": f"*Error generating performance analysis: {e}*"}
-    yield {"type": "section_done", "section": "performance_throughput"}
+    async for msg in llm_section("performance_throughput", 8,
+                                  _build_performance_prompt, max_tokens=700,
+                                  rag_query="slow timeout latency throughput performance"):
+        yield msg
 
     # ── 10. Component Health (LLM + RAG) ──────────────────────────────────────
-    yield {"type": "section_start", "section": "component_health", "index": 9}
-    try:
-        rag_ctx = _rag_search(state, "component service module initialization startup failure", top_k=8)
-        text = await _call_llm(client, model, _build_component_health_prompt(summary, rag_ctx), max_tokens=2000)
-        yield {"type": "section_content", "section": "component_health", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "component_health", "content": f"*Error generating component health: {e}*"}
-    yield {"type": "section_done", "section": "component_health"}
+    async for msg in llm_section("component_health", 9,
+                                  _build_component_health_prompt, max_tokens=800,
+                                  rag_query="component service module initialization startup failure"):
+        yield msg
 
-    # ── 11. Pattern Analysis (LLM) ────────────────────────────────────────────
-    yield {"type": "section_start", "section": "pattern_analysis", "index": 10}
-    try:
-        text = await _call_llm(client, model, _build_pattern_analysis_prompt(summary), max_tokens=1500)
-        yield {"type": "section_content", "section": "pattern_analysis", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "pattern_analysis", "content": f"*Error generating pattern analysis: {e}*"}
-    yield {"type": "section_done", "section": "pattern_analysis"}
+    # ── 11. Pattern Analysis (LLM, no RAG) ────────────────────────────────────
+    async for msg in llm_section("pattern_analysis", 10, _build_pattern_analysis_prompt, max_tokens=600):
+        yield msg
 
-    # ── 12. Entity Analysis (LLM) ─────────────────────────────────────────────
-    yield {"type": "section_start", "section": "entity_analysis", "index": 11}
-    try:
-        text = await _call_llm(client, model, _build_entity_analysis_prompt(summary), max_tokens=1200)
-        yield {"type": "section_content", "section": "entity_analysis", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "entity_analysis", "content": f"*Error generating entity analysis: {e}*"}
-    yield {"type": "section_done", "section": "entity_analysis"}
+    # ── 12. Entity Analysis (LLM, no RAG) ─────────────────────────────────────
+    async for msg in llm_section("entity_analysis", 11, _build_entity_analysis_prompt, max_tokens=500):
+        yield msg
 
-    # ── 13. Pain Points (LLM + RAG, most important) ───────────────────────────
-    yield {"type": "section_start", "section": "pain_points", "index": 12}
-    try:
-        rag_ctx = _rag_search(state, "error critical warning failure problem issue", top_k=10)
-        text = await _call_llm(client, model, _build_pain_points_prompt(summary, rag_ctx), max_tokens=2500)
-        yield {"type": "section_content", "section": "pain_points", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "pain_points", "content": f"*Error generating pain points: {e}*"}
-    yield {"type": "section_done", "section": "pain_points"}
+    # ── 13. Pain Points (LLM + RAG) ───────────────────────────────────────────
+    async for msg in llm_section("pain_points", 12,
+                                  _build_pain_points_prompt, max_tokens=1200,
+                                  rag_query="error critical warning failure problem issue"):
+        yield msg
 
     # ── 14. Recommendations (LLM + RAG) ──────────────────────────────────────
-    yield {"type": "section_start", "section": "recommendations", "index": 13}
-    try:
-        rag_ctx = _rag_search(state, "retry reconnect recovery workaround fix mitigation", top_k=6)
-        text = await _call_llm(client, model, _build_recommendations_prompt(summary, rag_ctx), max_tokens=1800)
-        yield {"type": "section_content", "section": "recommendations", "content": text}
-    except Exception as e:
-        yield {"type": "section_content", "section": "recommendations", "content": f"*Error generating recommendations: {e}*"}
-    yield {"type": "section_done", "section": "recommendations"}
+    async for msg in llm_section("recommendations", 13,
+                                  _build_recommendations_prompt, max_tokens=700,
+                                  rag_query="retry reconnect recovery workaround fix mitigation"):
+        yield msg
 
     # ── 15. Appendix (static) ─────────────────────────────────────────────────
     yield {"type": "section_start", "section": "appendix", "index": 14}
-    appendix_content = {
+    yield {"type": "section_content", "section": "appendix", "content": json.dumps({
         "error_samples": summary.get("error_samples", []),
-        "error_bursts": summary.get("error_bursts", []),
-        "top_patterns": summary.get("top_patterns", [])[:30],
-        "all_loggers": summary.get("top_loggers", []),
-        "entities": summary.get("entities", {}),
-    }
-    yield {"type": "section_content", "section": "appendix", "content": json.dumps(appendix_content)}
+        "error_bursts":  summary.get("error_bursts", []),
+        "top_patterns":  summary.get("top_patterns", [])[:30],
+        "all_loggers":   summary.get("top_loggers", []),
+        "entities":      summary.get("entities", {}),
+    })}
     yield {"type": "section_done", "section": "appendix"}
 
     yield {"type": "complete"}
